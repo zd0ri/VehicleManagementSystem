@@ -13,7 +13,6 @@ require_once __DIR__ . '/../includes/db.php';
 $success = '';
 $error = '';
 
-// Handle POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 

@@ -1,0 +1,268 @@
+<?php
+session_start();
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'technician') { header('Location: ../users/login.php'); exit; }
+$page_title = 'My Assignments'; $current_page = 'assignments';
+require_once __DIR__ . '/../includes/db.php';
+
+$tid = $_SESSION['user_id'];
+$success = $error = '';
+
+// Handle status updates
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    try {
+        if ($action === 'update_status') {
+            $new_status = $_POST['status'];
+            $assignment_id = $_POST['assignment_id'];
+
+            if ($new_status === 'Ongoing') {
+                $pdo->prepare("UPDATE assignments SET status = 'Ongoing', start_time = NOW() WHERE assignment_id = ? AND technician_id = ?")
+                    ->execute([$assignment_id, $tid]);
+                $success = 'Service started! Timer is running.';
+            } elseif ($new_status === 'Finished') {
+                $pdo->prepare("UPDATE assignments SET status = 'Finished', end_time = NOW() WHERE assignment_id = ? AND technician_id = ?")
+                    ->execute([$assignment_id, $tid]);
+                $success = 'Service completed! Great work.';
+            }
+        } elseif ($action === 'add_notes') {
+            $pdo->prepare("UPDATE assignments SET notes = ? WHERE assignment_id = ? AND technician_id = ?")
+                ->execute([$_POST['notes'], $_POST['assignment_id'], $tid]);
+            $success = 'Notes updated successfully.';
+        }
+    } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }
+}
+
+// Filters
+$filter_status = $_GET['status'] ?? '';
+$sql = "SELECT a.*, s.service_name, s.estimated_duration, s.base_price,
+        v.plate_number, v.make, v.model, v.year, v.color,
+        c.full_name AS client_name, c.phone AS client_phone, c.email AS client_email
+        FROM assignments a
+        LEFT JOIN services s ON a.service_id = s.service_id
+        LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
+        LEFT JOIN clients c ON v.client_id = c.client_id
+        WHERE a.technician_id = ?";
+$params = [$tid];
+if ($filter_status) { $sql .= " AND a.status = ?"; $params[] = $filter_status; }
+$sql .= " ORDER BY FIELD(a.status, 'Ongoing', 'Assigned', 'Finished'), a.assignment_id DESC";
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$assignments = $stmt->fetchAll();
+
+// Tab counts
+$cnt_all = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ?"); $cnt_all->execute([$tid]); $cnt_all = $cnt_all->fetchColumn();
+$cnt_assigned = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Assigned'"); $cnt_assigned->execute([$tid]); $cnt_assigned = $cnt_assigned->fetchColumn();
+$cnt_ongoing = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Ongoing'"); $cnt_ongoing->execute([$tid]); $cnt_ongoing = $cnt_ongoing->fetchColumn();
+$cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Finished'"); $cnt_finished->execute([$tid]); $cnt_finished = $cnt_finished->fetchColumn();
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?> - VehiCare Technician</title>
+    <link rel="stylesheet" href="../includes/style/technician.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="tech-body">
+<div class="tech-layout">
+    <?php include __DIR__ . '/includes/sidebar.php'; ?>
+    <main class="tech-main">
+        <?php include __DIR__ . '/includes/topbar.php'; ?>
+        <div class="tech-content">
+            <?php if ($success): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div><?php endif; ?>
+            <?php if ($error): ?><div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div><?php endif; ?>
+
+            <div class="page-header">
+                <div class="page-header-left">
+                    <h1><i class="fas fa-tasks" style="color:var(--primary);margin-right:10px;"></i> My Assignments</h1>
+                    <p>View and update your service assignments</p>
+                </div>
+            </div>
+
+            <!-- Filter Tabs -->
+            <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+                <a href="assignments.php" class="btn <?= !$filter_status ? 'btn-primary' : 'btn-secondary' ?> btn-sm">All (<?= $cnt_all ?>)</a>
+                <a href="assignments.php?status=Assigned" class="btn <?= $filter_status === 'Assigned' ? 'btn-primary' : 'btn-secondary' ?> btn-sm"><i class="fas fa-clock"></i> Assigned (<?= $cnt_assigned ?>)</a>
+                <a href="assignments.php?status=Ongoing" class="btn <?= $filter_status === 'Ongoing' ? 'btn-primary' : 'btn-secondary' ?> btn-sm"><i class="fas fa-play"></i> Ongoing (<?= $cnt_ongoing ?>)</a>
+                <a href="assignments.php?status=Finished" class="btn <?= $filter_status === 'Finished' ? 'btn-primary' : 'btn-secondary' ?> btn-sm"><i class="fas fa-check"></i> Finished (<?= $cnt_finished ?>)</a>
+            </div>
+
+            <?php if (empty($assignments)): ?>
+                <div class="tech-card"><div class="card-body"><div class="empty-state"><i class="fas fa-tasks"></i><h3>No assignments found</h3><p>You have no assignments in this category.</p></div></div></div>
+            <?php else: ?>
+                <?php foreach ($assignments as $a): ?>
+                <div class="tech-card" style="margin-bottom:16px;">
+                    <div class="card-header">
+                        <h3>
+                            <i class="fas fa-wrench"></i>
+                            <?= htmlspecialchars($a['service_name'] ?? 'Service #' . $a['assignment_id']) ?>
+                        </h3>
+                        <span class="badge badge-<?= strtolower($a['status']) ?>"><?= $a['status'] ?></span>
+                    </div>
+                    <div class="card-body">
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;">
+                            <!-- Vehicle Info -->
+                            <div>
+                                <h4 style="font-size:13px;color:var(--tech-text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
+                                    <i class="fas fa-car" style="color:var(--primary)"></i> Vehicle Information
+                                </h4>
+                                <div class="vehicle-info-card">
+                                    <div class="vehicle-icon"><i class="fas fa-car"></i></div>
+                                    <div class="vehicle-details">
+                                        <div class="vehicle-name"><?= htmlspecialchars(($a['year'] ?? '') . ' ' . ($a['make'] ?? '') . ' ' . ($a['model'] ?? '')) ?></div>
+                                        <div class="vehicle-plate"><i class="fas fa-id-badge"></i> <?= htmlspecialchars($a['plate_number'] ?? 'N/A') ?> <?= $a['color'] ? '&bull; ' . htmlspecialchars($a['color']) : '' ?></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Client Info -->
+                            <div>
+                                <h4 style="font-size:13px;color:var(--tech-text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
+                                    <i class="fas fa-user" style="color:var(--primary)"></i> Client Information
+                                </h4>
+                                <div style="display:flex;flex-direction:column;gap:6px;">
+                                    <div style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                                        <i class="fas fa-user" style="color:var(--tech-text-muted);width:16px;"></i>
+                                        <span style="color:var(--tech-text);"><?= htmlspecialchars($a['client_name'] ?? 'N/A') ?></span>
+                                    </div>
+                                    <?php if ($a['client_phone']): ?>
+                                    <div style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                                        <i class="fas fa-phone" style="color:var(--tech-text-muted);width:16px;"></i>
+                                        <span style="color:var(--tech-text-dim);"><?= htmlspecialchars($a['client_phone']) ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if ($a['client_email']): ?>
+                                    <div style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                                        <i class="fas fa-envelope" style="color:var(--tech-text-muted);width:16px;"></i>
+                                        <span style="color:var(--tech-text-dim);"><?= htmlspecialchars($a['client_email']) ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+
+                            <!-- Service Details -->
+                            <div>
+                                <h4 style="font-size:13px;color:var(--tech-text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
+                                    <i class="fas fa-info-circle" style="color:var(--primary)"></i> Service Details
+                                </h4>
+                                <div class="client-info-grid" style="grid-template-columns:1fr 1fr;">
+                                    <?php if ($a['estimated_duration']): ?>
+                                    <div class="client-info-item">
+                                        <div class="client-info-label">Est. Duration</div>
+                                        <div class="client-info-value"><?= $a['estimated_duration'] ?> min</div>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if ($a['start_time']): ?>
+                                    <div class="client-info-item">
+                                        <div class="client-info-label">Started</div>
+                                        <div class="client-info-value"><?= date('M d, h:i A', strtotime($a['start_time'])) ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if ($a['end_time']): ?>
+                                    <div class="client-info-item">
+                                        <div class="client-info-label">Completed</div>
+                                        <div class="client-info-value"><?= date('M d, h:i A', strtotime($a['end_time'])) ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if ($a['start_time'] && $a['end_time']): ?>
+                                    <div class="client-info-item">
+                                        <div class="client-info-label">Duration</div>
+                                        <div class="client-info-value"><?php
+                                            $diff = strtotime($a['end_time']) - strtotime($a['start_time']);
+                                            $hours = floor($diff / 3600);
+                                            $mins = floor(($diff % 3600) / 60);
+                                            echo ($hours > 0 ? $hours . 'h ' : '') . $mins . 'm';
+                                        ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Notes -->
+                        <?php if ($a['notes']): ?>
+                        <div style="margin-top:16px;padding:12px;background:var(--tech-surface-2);border-radius:var(--radius-sm);border-left:3px solid var(--primary);">
+                            <div style="font-size:12px;color:var(--tech-text-muted);text-transform:uppercase;margin-bottom:4px;">Notes</div>
+                            <div style="font-size:14px;color:var(--tech-text-dim);"><?= nl2br(htmlspecialchars($a['notes'])) ?></div>
+                        </div>
+                        <?php endif; ?>
+
+                        <!-- Actions -->
+                        <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                            <?php if ($a['status'] === 'Assigned'): ?>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="action" value="update_status">
+                                    <input type="hidden" name="assignment_id" value="<?= $a['assignment_id'] ?>">
+                                    <input type="hidden" name="status" value="Ongoing">
+                                    <button type="submit" class="btn btn-warning btn-sm" onclick="return confirm('Start working on this service?')">
+                                        <i class="fas fa-play"></i> Start Service
+                                    </button>
+                                </form>
+                            <?php elseif ($a['status'] === 'Ongoing'): ?>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="action" value="update_status">
+                                    <input type="hidden" name="assignment_id" value="<?= $a['assignment_id'] ?>">
+                                    <input type="hidden" name="status" value="Finished">
+                                    <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Mark this service as complete?')">
+                                        <i class="fas fa-check-circle"></i> Complete Service
+                                    </button>
+                                </form>
+                                <?php if ($a['start_time']): ?>
+                                <div style="display:flex;align-items:center;gap:6px;padding:6px 14px;background:rgba(243,156,18,0.1);border-radius:6px;font-size:13px;color:var(--orange);">
+                                    <i class="fas fa-clock"></i>
+                                    <span>In progress since <?= date('h:i A', strtotime($a['start_time'])) ?></span>
+                                </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <button class="btn btn-secondary btn-sm" onclick="openNotesModal(<?= $a['assignment_id'] ?>, '<?= addslashes($a['notes'] ?? '') ?>')">
+                                <i class="fas fa-sticky-note"></i> <?= $a['notes'] ? 'Edit Notes' : 'Add Notes' ?>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </main>
+</div>
+
+<!-- Notes Modal -->
+<div class="modal-overlay" id="notesModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>Assignment Notes</h3>
+            <button class="modal-close" onclick="closeModal('notesModal')">&times;</button>
+        </div>
+        <form method="POST">
+            <input type="hidden" name="action" value="add_notes">
+            <input type="hidden" name="assignment_id" id="notes_assignment_id">
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Notes & Observations</label>
+                    <textarea name="notes" id="notes_text" class="form-control" rows="5" placeholder="Enter your notes about this service..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('notesModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Notes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script src="includes/tech.js"></script>
+<script>
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+document.querySelectorAll('.modal-overlay').forEach(m => { m.addEventListener('click', e => { if (e.target === m) m.classList.remove('active'); }); });
+
+function openNotesModal(assignmentId, notes) {
+    document.getElementById('notes_assignment_id').value = assignmentId;
+    document.getElementById('notes_text').value = notes;
+    openModal('notesModal');
+}
+</script>
+</body>
+</html>

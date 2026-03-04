@@ -34,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $invoices = $pdo->query("SELECT i.*, c.full_name AS client_name, v.plate_number FROM invoices i LEFT JOIN clients c ON i.client_id = c.client_id LEFT JOIN vehicles v ON i.vehicle_id = v.vehicle_id ORDER BY i.created_at DESC")->fetchAll();
 $clients = $pdo->query("SELECT client_id, full_name FROM clients ORDER BY full_name ASC")->fetchAll();
-$vehicles = $pdo->query("SELECT vehicle_id, plate_number, brand, model FROM vehicles ORDER BY plate_number ASC")->fetchAll();
+$vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model FROM vehicles ORDER BY plate_number ASC")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -52,61 +52,56 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, brand, model FROM vehi
         <?php include __DIR__ . '/includes/topbar.php'; ?>
         <div class="admin-content">
             <?php if ($success): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div><?php endif; ?>
-            <?php if ($error): ?><div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div><?php endif; ?>
-            <div class="page-header"><div><h1><i class="fas fa-file-invoice-dollar"></i> Invoices</h1><p>Manage billing invoices</p></div>
+            <?php if ($error): ?><div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div><?php endif; ?>
+            <div class="page-header"><h2><i class="fas fa-file-invoice-dollar"></i> Invoices</h2>
                 <button class="btn btn-primary" onclick="openModal('addModal')"><i class="fas fa-plus"></i> Create Invoice</button></div>
             <div class="admin-card">
-                <div class="table-toolbar">
-                    <div class="table-search"><i class="fas fa-search"></i><input type="text" placeholder="Search..." onkeyup="searchTable(this.value)"></div>
-                    <div class="table-filter">
-                        <select onchange="filterByStatus(this.value)" class="form-control" style="width:auto;display:inline-block;">
-                            <option value="">All Statuses</option>
-                            <option value="Unpaid">Unpaid</option>
-                            <option value="Partially Paid">Partially Paid</option>
-                            <option value="Paid">Paid</option>
-                        </select>
-                    </div>
+                <div class="table-toolbar" style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
+                    <div class="search-box"><i class="fas fa-search"></i><input type="text" placeholder="Search..." onkeyup="searchTable(this.value)"></div>
+                    <select onchange="filterByStatus(this.value)" class="form-control" style="width:auto;">
+                        <option value="">All Statuses</option>
+                        <option value="Unpaid">Unpaid</option>
+                        <option value="Partially Paid">Partially Paid</option>
+                        <option value="Paid">Paid</option>
+                    </select>
                 </div>
-                <div class="card-body" style="padding:0">
-                    <?php if (empty($invoices)): ?><div class="empty-state"><i class="fas fa-file-invoice-dollar"></i><p>No invoices found.</p></div>
-                    <?php else: ?>
-                    <table class="admin-table" id="dataTable"><thead><tr><th>Invoice #</th><th>Client</th><th>Vehicle</th><th>Subtotal (₱)</th><th>Tax (₱)</th><th>Total (₱)</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($invoices as $r): ?>
-                    <tr data-status="<?= htmlspecialchars($r['status']) ?>">
-                        <td>INV-<?= $r['invoice_id'] ?></td>
-                        <td><?= htmlspecialchars($r['client_name'] ?? 'N/A') ?></td>
-                        <td><?= htmlspecialchars($r['plate_number'] ?? 'N/A') ?></td>
-                        <td>₱<?= number_format($r['subtotal'], 2) ?></td>
-                        <td>₱<?= number_format($r['tax_amount'], 2) ?></td>
-                        <td>₱<?= number_format($r['total_amount'], 2) ?></td>
-                        <td><span class="badge <?php
-                            if ($r['status'] === 'Paid') echo 'badge-paid';
-                            elseif ($r['status'] === 'Partially Paid') echo 'badge-pending';
-                            else echo 'badge-unpaid';
-                        ?>"><?= htmlspecialchars($r['status']) ?></span></td>
-                        <td><?= date('M d, Y h:i A', strtotime($r['created_at'])) ?></td>
-                        <td class="action-btns">
-                            <button class="btn-icon btn-edit" onclick='editInvoice(<?= json_encode($r) ?>)'><i class="fas fa-edit"></i></button>
-                            <form method="POST" style="display:inline" class="status-form">
-                                <input type="hidden" name="action" value="update_status">
-                                <input type="hidden" name="invoice_id" value="<?= $r['invoice_id'] ?>">
-                                <select name="status" class="form-control form-control-sm" onchange="this.form.submit()" style="width:auto;display:inline-block;font-size:0.8rem;padding:2px 6px;">
-                                    <option value="Unpaid" <?= $r['status'] === 'Unpaid' ? 'selected' : '' ?>>Unpaid</option>
-                                    <option value="Partially Paid" <?= $r['status'] === 'Partially Paid' ? 'selected' : '' ?>>Partially Paid</option>
-                                    <option value="Paid" <?= $r['status'] === 'Paid' ? 'selected' : '' ?>>Paid</option>
-                                </select>
-                            </form>
-                            <form method="POST" style="display:inline" onsubmit="return confirm('Delete this invoice and all its items?')">
-                                <input type="hidden" name="action" value="delete">
-                                <input type="hidden" name="invoice_id" value="<?= $r['invoice_id'] ?>">
-                                <button type="submit" class="btn-icon btn-delete"><i class="fas fa-trash"></i></button>
-                            </form>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody></table><?php endif; ?>
+                <?php if (empty($invoices)): ?><div class="empty-state"><i class="fas fa-file-invoice-dollar"></i><h3>No invoices found</h3><p>Click "Create Invoice" to add one.</p></div>
+                <?php else: ?>
+                <div class="table-responsive">
+                <table class="admin-table" id="dataTable"><thead><tr><th>Invoice #</th><th>Client</th><th>Vehicle</th><th>Subtotal</th><th>Tax</th><th>Total</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody>
+                <?php foreach ($invoices as $r): ?>
+                <tr data-status="<?= htmlspecialchars($r['status']) ?>">
+                    <td>INV-<?= $r['invoice_id'] ?></td>
+                    <td><?= htmlspecialchars($r['client_name'] ?? 'N/A') ?></td>
+                    <td><?= htmlspecialchars($r['plate_number'] ?? 'N/A') ?></td>
+                    <td>₱<?= number_format($r['subtotal'], 2) ?></td>
+                    <td>₱<?= number_format($r['tax_amount'], 2) ?></td>
+                    <td>₱<?= number_format($r['total_amount'], 2) ?></td>
+                    <td><span class="badge <?php if ($r['status'] === 'Paid') echo 'badge-paid'; elseif ($r['status'] === 'Partially Paid') echo 'badge-pending'; else echo 'badge-unpaid'; ?>"><?= htmlspecialchars($r['status']) ?></span></td>
+                    <td><?= date('M d, Y', strtotime($r['created_at'])) ?></td>
+                    <td class="action-btns">
+                        <button class="btn-icon btn-edit" onclick='editInvoice(<?= json_encode($r) ?>)'><i class="fas fa-edit"></i></button>
+                        <form method="POST" style="display:inline" class="status-form">
+                            <input type="hidden" name="action" value="update_status">
+                            <input type="hidden" name="invoice_id" value="<?= $r['invoice_id'] ?>">
+                            <select name="status" class="form-control form-control-sm" onchange="this.form.submit()" style="width:auto;display:inline-block;font-size:0.8rem;padding:2px 6px;">
+                                <option value="Unpaid" <?= $r['status'] === 'Unpaid' ? 'selected' : '' ?>>Unpaid</option>
+                                <option value="Partially Paid" <?= $r['status'] === 'Partially Paid' ? 'selected' : '' ?>>Partially Paid</option>
+                                <option value="Paid" <?= $r['status'] === 'Paid' ? 'selected' : '' ?>>Paid</option>
+                            </select>
+                        </form>
+                        <form method="POST" style="display:inline" onsubmit="return confirm('Delete this invoice?')">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="invoice_id" value="<?= $r['invoice_id'] ?>">
+                            <button type="submit" class="btn-icon btn-delete"><i class="fas fa-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table>
                 </div>
+                <?php endif; ?>
             </div>
         </div>
     </main>
@@ -116,7 +111,7 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, brand, model FROM vehi
 <div class="modal-overlay" id="addModal"><div class="modal"><div class="modal-header"><h3>Create Invoice</h3><button class="modal-close" onclick="closeModal('addModal')">&times;</button></div>
 <form method="POST"><input type="hidden" name="action" value="add"><div class="modal-body">
     <div class="form-group"><label>Client</label><select name="client_id" class="form-control" required><option value="">Select Client</option><?php foreach ($clients as $c): ?><option value="<?= $c['client_id'] ?>"><?= htmlspecialchars($c['full_name']) ?></option><?php endforeach; ?></select></div>
-    <div class="form-group"><label>Vehicle</label><select name="vehicle_id" class="form-control" required><option value="">Select Vehicle</option><?php foreach ($vehicles as $v): ?><option value="<?= $v['vehicle_id'] ?>"><?= htmlspecialchars($v['plate_number'] . ' - ' . $v['brand'] . ' ' . $v['model']) ?></option><?php endforeach; ?></select></div>
+    <div class="form-group"><label>Vehicle</label><select name="vehicle_id" class="form-control" required><option value="">Select Vehicle</option><?php foreach ($vehicles as $v): ?><option value="<?= $v['vehicle_id'] ?>"><?= htmlspecialchars($v['plate_number'] . ' - ' . $v['make'] . ' ' . $v['model']) ?></option><?php endforeach; ?></select></div>
     <div class="form-group"><label>Subtotal (₱)</label><input type="number" name="subtotal" class="form-control" step="0.01" min="0" required oninput="calcTotals('add')"></div>
     <div class="form-row">
         <div class="form-group"><label>Tax 12% (₱)</label><input type="text" id="add_tax" class="form-control" readonly></div>
@@ -129,7 +124,7 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, brand, model FROM vehi
 <div class="modal-overlay" id="editModal"><div class="modal"><div class="modal-header"><h3>Edit Invoice</h3><button class="modal-close" onclick="closeModal('editModal')">&times;</button></div>
 <form method="POST"><input type="hidden" name="action" value="edit"><input type="hidden" name="invoice_id" id="edit_invoice_id"><div class="modal-body">
     <div class="form-group"><label>Client</label><select name="client_id" id="edit_client_id" class="form-control" required><option value="">Select Client</option><?php foreach ($clients as $c): ?><option value="<?= $c['client_id'] ?>"><?= htmlspecialchars($c['full_name']) ?></option><?php endforeach; ?></select></div>
-    <div class="form-group"><label>Vehicle</label><select name="vehicle_id" id="edit_vehicle_id" class="form-control" required><option value="">Select Vehicle</option><?php foreach ($vehicles as $v): ?><option value="<?= $v['vehicle_id'] ?>"><?= htmlspecialchars($v['plate_number'] . ' - ' . $v['brand'] . ' ' . $v['model']) ?></option><?php endforeach; ?></select></div>
+    <div class="form-group"><label>Vehicle</label><select name="vehicle_id" id="edit_vehicle_id" class="form-control" required><option value="">Select Vehicle</option><?php foreach ($vehicles as $v): ?><option value="<?= $v['vehicle_id'] ?>"><?= htmlspecialchars($v['plate_number'] . ' - ' . $v['make'] . ' ' . $v['model']) ?></option><?php endforeach; ?></select></div>
     <div class="form-group"><label>Subtotal (₱)</label><input type="number" name="subtotal" id="edit_subtotal" class="form-control" step="0.01" min="0" required oninput="calcTotals('edit')"></div>
     <div class="form-row">
         <div class="form-group"><label>Tax 12% (₱)</label><input type="text" id="edit_tax" class="form-control" readonly></div>
@@ -155,21 +150,17 @@ function editInvoice(r) {
 }
 
 function calcTotals(prefix) {
-    var subtotalInput = prefix === 'add'
-        ? document.querySelector('#addModal input[name="subtotal"]')
-        : document.getElementById('edit_subtotal');
-    var subtotal = parseFloat(subtotalInput.value) || 0;
+    var si = prefix === 'add' ? document.querySelector('#addModal input[name="subtotal"]') : document.getElementById('edit_subtotal');
+    var subtotal = parseFloat(si.value) || 0;
     var tax = (subtotal * 0.12).toFixed(2);
     var total = (subtotal + parseFloat(tax)).toFixed(2);
-    document.getElementById(prefix + '_tax').value = '₱' + parseFloat(tax).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
-    document.getElementById(prefix + '_total').value = '₱' + parseFloat(total).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById(prefix + '_tax').value = '₱' + parseFloat(tax).toLocaleString('en-PH', {minimumFractionDigits:2});
+    document.getElementById(prefix + '_total').value = '₱' + parseFloat(total).toLocaleString('en-PH', {minimumFractionDigits:2});
 }
 
 function searchTable(q) {
     q = q.toLowerCase();
-    document.querySelectorAll('#dataTable tbody tr').forEach(r => {
-        r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
-    });
+    document.querySelectorAll('#dataTable tbody tr').forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
 }
 
 function filterByStatus(status) {

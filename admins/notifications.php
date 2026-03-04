@@ -1,90 +1,46 @@
 <?php
 session_start();
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-    header('Location: ../users/login.php');
-    exit;
-}
-
-$page_title = 'Notifications';
-$current_page = 'notifications';
-
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') { header('Location: ../users/login.php'); exit; }
+$page_title = 'Notifications'; $current_page = 'notifications';
 require_once __DIR__ . '/../includes/db.php';
+$success = $error = '';
 
-$success = '';
-$error = '';
-
-// Handle POST actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $action = $_POST['action'];
-
-    if ($action === 'add') {
-        try {
-            $stmt = $conn->prepare("INSERT INTO notifications (user_id, title, message) VALUES (?, ?, ?)");
-            $user_id = null;
-            $stmt->bind_param("iss",
-                $user_id,
-                $_POST['title'],
-                $_POST['message']
-            );
-            $stmt->execute();
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    try {
+        if ($action === 'add') {
+            $user_id = !empty($_POST['user_id']) ? $_POST['user_id'] : null;
+            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, is_read) VALUES (?,?,?,0)");
+            $stmt->execute([$user_id, $_POST['title'], $_POST['message']]);
             $success = 'Notification sent successfully.';
-        } catch (Exception $e) {
-            $error = 'Failed to send notification: ' . $e->getMessage();
-        }
-    }
-
-    if ($action === 'mark_read') {
-        try {
-            $stmt = $conn->prepare("UPDATE notifications SET is_read = 1 WHERE notification_id = ?");
-            $stmt->bind_param("i", $_POST['notification_id']);
-            $stmt->execute();
+        } elseif ($action === 'mark_read') {
+            $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE notification_id = ?")->execute([$_POST['notification_id']]);
             $success = 'Notification marked as read.';
-        } catch (Exception $e) {
-            $error = 'Failed to mark notification: ' . $e->getMessage();
-        }
-    }
-
-    if ($action === 'mark_all_read') {
-        try {
-            $conn->query("UPDATE notifications SET is_read = 1");
+        } elseif ($action === 'mark_all_read') {
+            $pdo->exec("UPDATE notifications SET is_read = 1 WHERE is_read = 0");
             $success = 'All notifications marked as read.';
-        } catch (Exception $e) {
-            $error = 'Failed to mark all notifications: ' . $e->getMessage();
+        } elseif ($action === 'delete') {
+            $pdo->prepare("DELETE FROM notifications WHERE notification_id = ?")->execute([$_POST['notification_id']]);
+            $success = 'Notification deleted.';
+        } elseif ($action === 'delete_all_read') {
+            $pdo->exec("DELETE FROM notifications WHERE is_read = 1");
+            $success = 'All read notifications deleted.';
         }
-    }
-
-    if ($action === 'delete') {
-        try {
-            $stmt = $conn->prepare("DELETE FROM notifications WHERE notification_id = ?");
-            $stmt->bind_param("i", $_POST['notification_id']);
-            $stmt->execute();
-            $success = 'Notification deleted successfully.';
-        } catch (Exception $e) {
-            $error = 'Failed to delete notification: ' . $e->getMessage();
-        }
-    }
+    } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }
 }
 
-// Fetch all notifications
-$notifications = [];
-try {
-    $result = $conn->query("SELECT * FROM notifications ORDER BY created_at DESC");
-    while ($row = $result->fetch_assoc()) {
-        $notifications[] = $row;
-    }
-} catch (Exception $e) {
-    $error = 'Failed to fetch notifications: ' . $e->getMessage();
-}
+$notifications = $pdo->query("SELECT n.*, u.full_name AS user_name FROM notifications n LEFT JOIN users u ON n.user_id = u.user_id ORDER BY n.created_at DESC")->fetchAll();
+$users = $pdo->query("SELECT user_id, full_name, role FROM users WHERE status = 'active' ORDER BY full_name ASC")->fetchAll();
+$unread_count = $pdo->query("SELECT COUNT(*) FROM notifications WHERE is_read = 0")->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($page_title) ?> - Admin</title>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?> - VehiCare Admin</title>
     <link rel="stylesheet" href="../includes/style/admin.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="admin-body">
 <div class="admin-layout">
@@ -92,159 +48,68 @@ try {
     <main class="admin-main">
         <?php include __DIR__ . '/includes/topbar.php'; ?>
         <div class="admin-content">
-
-            <!-- Alert messages -->
-            <?php if ($success): ?>
-                <div class="alert alert-success">
-                    <i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?>
-                </div>
-            <?php endif; ?>
-            <?php if ($error): ?>
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?>
-                </div>
-            <?php endif; ?>
-
-            <!-- Page header -->
+            <?php if ($success): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div><?php endif; ?>
+            <?php if ($error): ?><div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div><?php endif; ?>
             <div class="page-header">
-                <h2><i class="fas fa-bell"></i> Notifications</h2>
-                <div>
-                    <form method="POST" style="display:inline">
-                        <input type="hidden" name="action" value="mark_all_read">
-                        <button type="submit" class="btn btn-secondary">
-                            <i class="fas fa-check-double"></i> Mark All Read
-                        </button>
-                    </form>
-                    <button class="btn btn-primary" onclick="openModal('addModal')">
-                        <i class="fas fa-plus"></i> Send Notification
-                    </button>
+                <h2><i class="fas fa-bell"></i> Notifications <span class="badge badge-info"><?= $unread_count ?> unread</span></h2>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                    <button class="btn btn-primary" onclick="openModal('addModal')"><i class="fas fa-plus"></i> Send Notification</button>
+                    <form method="POST" style="display:inline"><input type="hidden" name="action" value="mark_all_read"><button type="submit" class="btn btn-secondary"><i class="fas fa-check-double"></i> Mark All Read</button></form>
+                    <form method="POST" style="display:inline" onsubmit="return confirm('Delete all read notifications?')"><input type="hidden" name="action" value="delete_all_read"><button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Clear Read</button></form>
                 </div>
             </div>
 
-            <!-- Admin card with table -->
             <div class="admin-card">
-                <div class="table-toolbar">
-                    <div class="search-box">
-                        <i class="fas fa-search"></i>
-                        <input type="text" id="searchInput" placeholder="Search notifications..." onkeyup="searchTable()">
-                    </div>
-                </div>
-
-                <?php if (count($notifications) > 0): ?>
-                <div class="table-responsive">
-                    <table class="admin-table" id="notificationsTable">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Title</th>
-                                <th>Message</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($notifications as $row): ?>
-                            <tr>
-                                <td><?= htmlspecialchars($row['notification_id']) ?></td>
-                                <td><?= htmlspecialchars($row['title']) ?></td>
-                                <td><?= htmlspecialchars(mb_strimwidth($row['message'], 0, 60, '...')) ?></td>
-                                <td>
-                                    <?php if ($row['is_read']): ?>
-                                        <span class="badge badge-success">Read</span>
-                                    <?php else: ?>
-                                        <span class="badge badge-warning">Unread</span>
-                                    <?php endif; ?>
-                                </td>
-                                <td><?= htmlspecialchars($row['created_at']) ?></td>
-                                <td class="action-btns">
-                                    <?php if (!$row['is_read']): ?>
-                                    <form method="POST" style="display:inline">
-                                        <input type="hidden" name="action" value="mark_read">
-                                        <input type="hidden" name="notification_id" value="<?= $row['notification_id'] ?>">
-                                        <button type="submit" class="btn-icon btn-edit" title="Mark as Read"><i class="fas fa-check"></i></button>
-                                    </form>
-                                    <?php endif; ?>
-                                    <form method="POST" style="display:inline" onsubmit="return confirm('Delete this notification?')">
-                                        <input type="hidden" name="action" value="delete">
-                                        <input type="hidden" name="notification_id" value="<?= $row['notification_id'] ?>">
-                                        <button type="submit" class="btn-icon btn-delete"><i class="fas fa-trash"></i></button>
-                                    </form>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
+                <div class="table-toolbar"><div class="search-box"><i class="fas fa-search"></i><input type="text" placeholder="Search..." onkeyup="searchTable(this.value)"></div></div>
+                <?php if (empty($notifications)): ?><div class="empty-state"><i class="fas fa-bell-slash"></i><h3>No notifications</h3><p>Click "Send Notification" to create one.</p></div>
                 <?php else: ?>
-                <div class="empty-state">
-                    <i class="fas fa-bell"></i>
-                    <h3>No notifications found</h3>
-                    <p>Click "Send Notification" to create one.</p>
+                <div class="notification-list" id="dataTable">
+                    <?php foreach ($notifications as $n): ?>
+                    <div class="notification-item <?= $n['is_read'] ? 'read' : 'unread' ?>" style="display:flex;justify-content:space-between;align-items:flex-start;padding:1rem;border-bottom:1px solid var(--border-color);<?= !$n['is_read'] ? 'background:rgba(227,30,36,0.04);border-left:3px solid var(--primary-red);' : '' ?>">
+                        <div style="flex:1;">
+                            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+                                <?php if (!$n['is_read']): ?><span style="width:8px;height:8px;border-radius:50%;background:var(--primary-red);display:inline-block;"></span><?php endif; ?>
+                                <strong style="font-size:0.95rem;"><?= htmlspecialchars($n['title']) ?></strong>
+                            </div>
+                            <p style="margin:0.25rem 0;color:var(--text-muted);font-size:0.9rem;"><?= htmlspecialchars($n['message']) ?></p>
+                            <small style="color:var(--text-muted);">
+                                <?php if ($n['user_name']): ?>To: <?= htmlspecialchars($n['user_name']) ?> &bull; <?php else: ?>System &bull; <?php endif; ?>
+                                <?= date('M d, Y h:i A', strtotime($n['created_at'])) ?>
+                            </small>
+                        </div>
+                        <div style="display:flex;gap:0.25rem;margin-left:1rem;">
+                            <?php if (!$n['is_read']): ?>
+                            <form method="POST"><input type="hidden" name="action" value="mark_read"><input type="hidden" name="notification_id" value="<?= $n['notification_id'] ?>"><button type="submit" class="btn-icon btn-edit" title="Mark Read"><i class="fas fa-check"></i></button></form>
+                            <?php endif; ?>
+                            <form method="POST" onsubmit="return confirm('Delete this notification?')"><input type="hidden" name="action" value="delete"><input type="hidden" name="notification_id" value="<?= $n['notification_id'] ?>"><button type="submit" class="btn-icon btn-delete" title="Delete"><i class="fas fa-trash"></i></button></form>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
                 </div>
                 <?php endif; ?>
             </div>
-
-            <!-- Add Modal -->
-            <div class="modal-overlay" id="addModal">
-                <div class="modal">
-                    <div class="modal-header">
-                        <h3>Send Notification</h3>
-                        <button class="modal-close" onclick="closeModal('addModal')">&times;</button>
-                    </div>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="add">
-                        <div class="modal-body">
-                            <div class="form-group">
-                                <label>Title</label>
-                                <input type="text" name="title" class="form-control" required>
-                            </div>
-                            <div class="form-group">
-                                <label>Message</label>
-                                <textarea name="message" class="form-control" rows="4" required></textarea>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button>
-                            <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-
         </div>
     </main>
 </div>
 
+<!-- Add Modal -->
+<div class="modal-overlay" id="addModal"><div class="modal"><div class="modal-header"><h3>Send Notification</h3><button class="modal-close" onclick="closeModal('addModal')">&times;</button></div>
+<form method="POST"><input type="hidden" name="action" value="add"><div class="modal-body">
+    <div class="form-group"><label>Recipient (optional - leave blank for system-wide)</label><select name="user_id" class="form-control"><option value="">All Users (System)</option><?php foreach ($users as $u): ?><option value="<?= $u['user_id'] ?>"><?= htmlspecialchars($u['full_name']) ?> (<?= $u['role'] ?>)</option><?php endforeach; ?></select></div>
+    <div class="form-group"><label>Title</label><input type="text" name="title" class="form-control" required placeholder="Notification title"></div>
+    <div class="form-group"><label>Message</label><textarea name="message" class="form-control" rows="4" required placeholder="Notification message..."></textarea></div>
+</div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button><button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send</button></div></form></div></div>
+
 <script src="includes/admin.js"></script>
 <script>
-function openModal(id) {
-    document.getElementById(id).classList.add('active');
-}
+function openModal(id){ document.getElementById(id).classList.add('active'); }
+function closeModal(id){ document.getElementById(id).classList.remove('active'); }
+document.querySelectorAll('.modal-overlay').forEach(m => { m.addEventListener('click', e => { if (e.target === m) m.classList.remove('active'); }); });
 
-function closeModal(id) {
-    document.getElementById(id).classList.remove('active');
+function searchTable(q) {
+    q = q.toLowerCase();
+    document.querySelectorAll('.notification-item').forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
 }
-
-function searchTable() {
-    var input = document.getElementById('searchInput').value.toLowerCase();
-    var table = document.getElementById('notificationsTable');
-    if (!table) return;
-    var rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
-    for (var i = 0; i < rows.length; i++) {
-        var text = rows[i].textContent.toLowerCase();
-        rows[i].style.display = text.indexOf(input) > -1 ? '' : 'none';
-    }
-}
-
-// Close modal when clicking outside
-document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
-    overlay.addEventListener('click', function(e) {
-        if (e.target === overlay) {
-            overlay.classList.remove('active');
-        }
-    });
-});
 </script>
 </body>
 </html>

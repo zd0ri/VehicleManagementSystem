@@ -65,6 +65,9 @@
     </nav>
 
     <div class="sidebar-footer">
+        <a href="../index.php" class="sidebar-link sidebar-shop" target="_blank">
+            <i class="fas fa-store"></i> <span>View Shop</span>
+        </a>
         <a href="../users/logout.php" class="sidebar-link sidebar-logout">
             <i class="fas fa-sign-out-alt"></i> <span>Logout</span>
         </a>
