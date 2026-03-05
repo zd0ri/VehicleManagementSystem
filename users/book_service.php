@@ -22,9 +22,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     // ── Book Appointment ──
     if ($action === 'book') {
         $vehicle_id       = (int) ($_POST['vehicle_id'] ?? 0);
+        $service_id       = (int) ($_POST['service_id'] ?? 0);
         $appointment_date = trim($_POST['appointment_date'] ?? '');
+        $notes            = trim($_POST['notes'] ?? '');
 
-        if (!$vehicle_id || !$appointment_date) {
+        if (!$vehicle_id || !$appointment_date || !$service_id) {
             $error = 'Please fill in all required fields.';
         } else {
             // Verify the vehicle belongs to this client
@@ -33,9 +35,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if (!$chk->fetch()) {
                 $error = 'Invalid vehicle selected.';
             } else {
-                $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, appointment_date, status, created_by) VALUES (?, ?, ?, 'Pending', ?)");
-                $stmt->execute([$client_id, $vehicle_id, $appointment_date, $user_id]);
-                $success = 'Appointment booked successfully! We will confirm it shortly.';
+                try {
+                    $pdo->beginTransaction();
+
+                    // Find least busy available technician
+                    $tech_stmt = $pdo->query("
+                        SELECT u.user_id, u.full_name,
+                               COUNT(a.assignment_id) AS active_count
+                        FROM users u
+                        LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing')
+                        WHERE u.role = 'technician' AND u.status = 'active'
+                        GROUP BY u.user_id
+                        ORDER BY active_count ASC
+                        LIMIT 1
+                    ");
+                    $available_tech = $tech_stmt->fetch();
+
+                    if ($available_tech) {
+                        // Auto-assign: create appointment as Approved
+                        $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, ?, 'Approved', ?, ?)");
+                        $stmt->execute([$client_id, $vehicle_id, $service_id, $appointment_date, $notes, $user_id]);
+                        $appointment_id = $pdo->lastInsertId();
+
+                        // Create assignment for technician
+                        $stmt = $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')");
+                        $stmt->execute([$appointment_id, $vehicle_id, $available_tech['user_id'], $service_id]);
+
+                        // Notify the technician
+                        $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                        $svc->execute([$service_id]);
+                        $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Service Assignment', ?, 'new_assignment')")
+                            ->execute([$available_tech['user_id'], 'You have been assigned: ' . $svc_name . '. Scheduled for ' . date('M d, Y h:i A', strtotime($appointment_date)) . '.']);
+
+                        $pdo->commit();
+                        $success = 'Appointment booked and assigned to technician ' . htmlspecialchars($available_tech['full_name']) . '!';
+                    } else {
+                        // No technician available — queue the client
+                        $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, ?, 'Pending', ?, ?)");
+                        $stmt->execute([$client_id, $vehicle_id, $service_id, $appointment_date, $notes, $user_id]);
+
+                        $next_pos = (int) $pdo->query("SELECT COALESCE(MAX(position), 0) + 1 FROM queue WHERE status IN ('Waiting','Serving')")->fetchColumn();
+                        $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')")
+                            ->execute([$vehicle_id, $client_id, $next_pos]);
+
+                        // Notify client about queue
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Queued', ?, 'queue')")
+                            ->execute([$user_id, 'All technicians are currently busy. You are in queue position #' . $next_pos . '. We will notify you when it\'s your turn.']);
+
+                        $pdo->commit();
+                        $success = 'All technicians are currently busy. You have been added to the queue at position #' . $next_pos . '. We will notify you when it\'s your turn.';
+                    }
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    $error = 'Failed to book appointment: ' . $e->getMessage();
+                }
             }
         }
     }
@@ -94,14 +148,25 @@ $vehicles = $vehicles->fetchAll();
 // ── Fetch existing appointments ──
 $appts = $pdo->prepare("
     SELECT a.appointment_id, a.appointment_date, a.status, a.created_at,
-           v.plate_number, v.make, v.model, v.year
+           v.plate_number, v.make, v.model, v.year,
+           s.service_name,
+           tech.full_name AS technician_name
     FROM appointments a
     JOIN vehicles v ON a.vehicle_id = v.vehicle_id
+    LEFT JOIN services s ON a.service_id = s.service_id
+    LEFT JOIN assignments asgn ON asgn.appointment_id = a.appointment_id
+    LEFT JOIN users tech ON asgn.technician_id = tech.user_id
     WHERE a.client_id = ?
     ORDER BY a.appointment_date DESC
 ");
 $appts->execute([$client_id]);
 $appointments = $appts->fetchAll();
+
+// ── Unread notifications ──
+$notifStmt = $pdo->prepare("SELECT * FROM notifications WHERE user_id = ? AND is_read = 0 ORDER BY created_at DESC LIMIT 5");
+$notifStmt->execute([$user_id]);
+$unread_notifs = $notifStmt->fetchAll();
+$notifCount = count($unread_notifs);
 
 // ── Cart count for badge ──
 $cartStmt = $pdo->prepare("SELECT COUNT(*) FROM cart WHERE client_id = ?");
@@ -607,6 +672,21 @@ $cartCount = $cartStmt->fetchColumn();
             <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
+        <!-- Notification Alerts -->
+        <?php if (!empty($unread_notifs)): ?>
+            <?php foreach ($unread_notifs as $notif): ?>
+                <div class="alert alert-success" style="background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;">
+                    <i class="fas fa-bell"></i>
+                    <strong><?= htmlspecialchars($notif['title']) ?></strong> &mdash; <?= htmlspecialchars($notif['message']) ?>
+                    <small style="margin-left:10px;opacity:0.7;"><?= date('M d, h:i A', strtotime($notif['created_at'])) ?></small>
+                </div>
+            <?php endforeach; ?>
+            <?php
+                // Mark displayed notifications as read
+                $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0")->execute([$user_id]);
+            ?>
+        <?php endif; ?>
+
         <!-- ── Available Services ── -->
         <h2 class="section-heading"><i class="fas fa-wrench"></i> Available Services</h2>
 
@@ -672,6 +752,8 @@ $cartCount = $cartStmt->fetchColumn();
                             <tr>
                                 <th>#</th>
                                 <th>Vehicle</th>
+                                <th>Service</th>
+                                <th>Technician</th>
                                 <th>Date &amp; Time</th>
                                 <th>Status</th>
                                 <th>Booked On</th>
@@ -689,6 +771,8 @@ $cartCount = $cartStmt->fetchColumn();
                                     <?= htmlspecialchars($appt['make'] . ' ' . $appt['model']) ?>
                                     <?php if ($appt['year']): ?>(<?= htmlspecialchars($appt['year']) ?>)<?php endif; ?>
                                 </td>
+                                <td data-label="Service"><?= htmlspecialchars($appt['service_name'] ?? 'N/A') ?></td>
+                                <td data-label="Technician"><?= htmlspecialchars($appt['technician_name'] ?? 'Queued') ?></td>
                                 <td data-label="Date &amp; Time"><?= date('M d, Y - h:i A', strtotime($appt['appointment_date'])) ?></td>
                                 <td data-label="Status"><span class="badge <?= $statusClass ?>"><?= htmlspecialchars($appt['status']) ?></span></td>
                                 <td data-label="Booked On"><?= date('M d, Y', strtotime($appt['created_at'])) ?></td>

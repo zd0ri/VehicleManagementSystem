@@ -60,9 +60,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
     $notes      = trim($_POST['notes'] ?? '');
 
     // Validate payment method
-    $validMethods = ['Cash', 'Card', 'GCash', 'Bank Transfer'];
+    $validMethods = ['Cash', 'GCash', 'Maya'];
     if (!in_array($pay_method, $validMethods)) {
         $pay_method = 'Cash';
+    }
+
+    // Handle receipt upload for e-wallet payments
+    $receipt_image = null;
+    if (in_array($pay_method, ['GCash', 'Maya'])) {
+        if (isset($_FILES['receipt_image']) && $_FILES['receipt_image']['error'] === UPLOAD_ERR_OK) {
+            $ext = strtolower(pathinfo($_FILES['receipt_image']['name'], PATHINFO_EXTENSION));
+            $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+            if (in_array($ext, $allowed)) {
+                $filename = 'receipt_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+                move_uploaded_file($_FILES['receipt_image']['tmp_name'], __DIR__ . '/../uploads/' . $filename);
+                $receipt_image = $filename;
+            } else {
+                $error = 'Invalid receipt image format. Allowed: JPG, PNG, GIF, WEBP';
+            }
+        } else {
+            $error = 'Receipt image is required for e-wallet payments.';
+        }
+        if ($error) {
+            goto skip_order;
+        }
     }
 
     // Determine order type
@@ -91,10 +112,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
 
         // Create order record
         $stmtOrder = $pdo->prepare("
-            INSERT INTO orders (client_id, order_type, vehicle_id, subtotal, tax_amount, total_amount, status, payment_method, notes, created_at)
-            VALUES (?, ?, NULL, ?, ?, ?, 'Pending', ?, ?, NOW())
+            INSERT INTO orders (client_id, order_type, vehicle_id, subtotal, tax_amount, total_amount, status, payment_method, receipt_image, notes, created_at)
+            VALUES (?, ?, NULL, ?, ?, ?, 'Pending', ?, ?, ?, NOW())
         ");
-        $stmtOrder->execute([$client_id, $order_type, $subtotal, $tax, $total, $pay_method, $notes]);
+        $stmtOrder->execute([$client_id, $order_type, $subtotal, $tax, $total, $pay_method, $receipt_image, $notes]);
         $order_id = $pdo->lastInsertId();
 
         // Create order items and decrease inventory
@@ -121,6 +142,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
         $stmtClear = $pdo->prepare("DELETE FROM cart WHERE client_id = ?");
         $stmtClear->execute([$client_id]);
 
+        // Notify admin about e-wallet payments
+        if (in_array($pay_method, ['GCash', 'Maya'])) {
+            $admin_users = $pdo->query("SELECT user_id FROM users WHERE role = 'admin' AND status = 'active'")->fetchAll();
+            foreach ($admin_users as $admin) {
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New E-Wallet Payment', ?, 'ewallet_payment')")
+                    ->execute([$admin['user_id'], 'Order #' . $order_id . ' paid via ' . $pay_method . '. Amount: ₱' . number_format($total, 2) . '. Please verify the receipt.']);
+            }
+        }
+
         $pdo->commit();
 
         $_SESSION['order_success'] = 'Your order #' . $order_id . ' has been placed successfully!';
@@ -130,6 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
         $pdo->rollBack();
         $error = $e->getMessage();
     }
+    skip_order:
 }
 ?>
 <!DOCTYPE html>
@@ -629,7 +660,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
             <!-- ===== RIGHT: Checkout Form ===== -->
             <div class="checkout-form-card">
                 <h3><i class="fas fa-file-invoice"></i> Billing Details</h3>
-                <form method="POST" action="checkout.php" class="checkout-form">
+                <form method="POST" action="checkout.php" class="checkout-form" enctype="multipart/form-data">
 
                     <div class="form-section-title"><i class="fas fa-user-circle"></i> Customer Information</div>
 
@@ -660,13 +691,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                     <div class="form-section-title"><i class="fas fa-wallet"></i> Payment</div>
 
                     <div class="form-group">
-                        <label><i class="fas fa-credit-card"></i> Payment Method</label>
-                        <select name="payment_method" required>
-                            <option value="Cash">Cash</option>
-                            <option value="Card">Card</option>
-                            <option value="GCash">GCash</option>
-                            <option value="Bank Transfer">Bank Transfer</option>
+                        <label><i class="fas fa-wallet"></i> Payment Method</label>
+                        <select name="payment_method" id="paymentMethod" required onchange="toggleReceipt()">
+                            <option value="Cash">Cash - Pay on Pickup/Delivery</option>
+                            <option value="GCash">GCash (E-Wallet)</option>
+                            <option value="Maya">Maya (E-Wallet)</option>
                         </select>
+                    </div>
+
+                    <div class="form-group" id="receiptGroup" style="display:none;">
+                        <label><i class="fas fa-camera"></i> Payment Receipt <span style="color:#e74c3c;">*</span></label>
+                        <input type="file" name="receipt_image" id="receiptImage" accept="image/*" style="width:100%;padding:10px 14px;border:2px dashed #e74c3c;border-radius:8px;background:#fff5f5;cursor:pointer;font-size:14px;box-sizing:border-box;">
+                        <small style="color:#888;display:block;margin-top:6px;"><i class="fas fa-info-circle"></i> Upload a screenshot of your GCash/Maya payment receipt for verification.</small>
                     </div>
 
                     <div class="form-group">
@@ -684,7 +720,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
 
                     <div class="security-note">
                         <i class="fas fa-shield-alt"></i>
-                        <span>Your order is secure. We do not store payment card details.</span>
+                        <span>Your order is secure. E-wallet receipts are stored safely for verification.</span>
                     </div>
                 </form>
             </div>
@@ -716,6 +752,21 @@ window.addEventListener('scroll', function () {
     const header = document.querySelector('.main-header');
     if (header) header.classList.toggle('sticky', window.scrollY > 100);
 });
+
+// Toggle receipt upload field for e-wallet payments
+function toggleReceipt() {
+    var method = document.getElementById('paymentMethod').value;
+    var receiptGroup = document.getElementById('receiptGroup');
+    var receiptInput = document.getElementById('receiptImage');
+    if (method === 'GCash' || method === 'Maya') {
+        receiptGroup.style.display = 'block';
+        receiptInput.required = true;
+    } else {
+        receiptGroup.style.display = 'none';
+        receiptInput.required = false;
+        receiptInput.value = '';
+    }
+}
 </script>
 
 </body>

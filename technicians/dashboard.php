@@ -42,6 +42,14 @@ $recent_ratings = $pdo->prepare("SELECT r.*, c.full_name AS client_name FROM rat
 $recent_ratings->execute([$tid]);
 $recent_ratings = $recent_ratings->fetchAll();
 
+// Unread notifications
+$unread_notifs = $pdo->prepare("SELECT * FROM notifications WHERE user_id = ? AND is_read = 0 ORDER BY created_at DESC LIMIT 5");
+$unread_notifs->execute([$tid]);
+$unread_notifs = $unread_notifs->fetchAll();
+$unread_count = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_count->execute([$tid]);
+$unread_count = $unread_count->fetchColumn();
+
 // Completion rate
 $completion_rate = $total_assignments > 0 ? round(($finished / $total_assignments) * 100) : 0;
 ?>
@@ -108,6 +116,28 @@ $completion_rate = $total_assignments > 0 ? round(($finished / $total_assignment
 
             <!-- Dashboard Grid -->
             <div class="dashboard-grid">
+                <!-- Notifications -->
+                <?php if ($unread_count > 0): ?>
+                <div class="tech-card" style="grid-column: 1 / -1;">
+                    <div class="card-header">
+                        <h3><i class="fas fa-bell"></i> Unread Notifications <span class="badge badge-assigned" style="margin-left:8px;"><?= $unread_count ?></span></h3>
+                        <a href="notifications.php" class="card-action">View All <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                    <div class="card-body">
+                        <?php foreach ($unread_notifs as $n): ?>
+                        <div class="assignment-item">
+                            <div class="assignment-icon assigned"><i class="fas fa-bell"></i></div>
+                            <div class="assignment-details">
+                                <div class="assignment-title"><?= htmlspecialchars($n['title']) ?></div>
+                                <div class="assignment-meta"><span><?= htmlspecialchars($n['message']) ?></span></div>
+                            </div>
+                            <span style="color:#888;font-size:0.8rem;white-space:nowrap;"><?= date('M d, h:iA', strtotime($n['created_at'])) ?></span>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <!-- Recent Assignments -->
                 <div class="tech-card">
                     <div class="card-header">

@@ -16,48 +16,6 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
-    if ($action === 'add') {
-        try {
-            $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, appointment_date, status, created_by) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([
-                $_POST['client_id'],
-                $_POST['vehicle_id'],
-                $_POST['appointment_date'],
-                $_POST['status'],
-                $_SESSION['user_id']
-            ]);
-            $success = 'Appointment added successfully.';
-        } catch (Exception $e) {
-            $error = 'Failed to add appointment: ' . $e->getMessage();
-        }
-    }
-
-    if ($action === 'edit') {
-        try {
-            $stmt = $pdo->prepare("UPDATE appointments SET client_id = ?, vehicle_id = ?, appointment_date = ?, status = ? WHERE appointment_id = ?");
-            $stmt->execute([
-                $_POST['client_id'],
-                $_POST['vehicle_id'],
-                $_POST['appointment_date'],
-                $_POST['status'],
-                $_POST['appointment_id']
-            ]);
-            $success = 'Appointment updated successfully.';
-        } catch (Exception $e) {
-            $error = 'Failed to update appointment: ' . $e->getMessage();
-        }
-    }
-
-    if ($action === 'delete') {
-        try {
-            $stmt = $pdo->prepare("DELETE FROM appointments WHERE appointment_id = ?");
-            $stmt->execute([$_POST['appointment_id']]);
-            $success = 'Appointment deleted successfully.';
-        } catch (Exception $e) {
-            $error = 'Failed to delete appointment: ' . $e->getMessage();
-        }
-    }
-
     if ($action === 'update_status') {
         try {
             $stmt = $pdo->prepare("UPDATE appointments SET status = ? WHERE appointment_id = ?");
@@ -70,14 +28,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $error = 'Failed to update status: ' . $e->getMessage();
         }
     }
+
+    if ($action === 'delete') {
+        try {
+            $stmt = $pdo->prepare("DELETE FROM appointments WHERE appointment_id = ?");
+            $stmt->execute([$_POST['appointment_id']]);
+            $success = 'Appointment deleted successfully.';
+        } catch (Exception $e) {
+            $error = 'Failed to delete appointment: ' . $e->getMessage();
+        }
+    }
 }
 
-// Fetch appointments with JOINs for client and vehicle names
-$appointments = $pdo->query("SELECT a.*, c.full_name AS client_name, v.plate_number, v.make, v.model FROM appointments a LEFT JOIN clients c ON a.client_id = c.client_id LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id ORDER BY a.appointment_date DESC")->fetchAll();
-
-// Fetch clients and vehicles for dropdowns
-$clients = $pdo->query("SELECT client_id, full_name FROM clients ORDER BY full_name")->fetchAll();
-$vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id FROM vehicles ORDER BY plate_number")->fetchAll();
+// Fetch appointments with JOINs for client, vehicle, service, and assigned technician
+$appointments = $pdo->query("
+    SELECT a.*, c.full_name AS client_name, v.plate_number, v.make, v.model,
+           s.service_name, s.estimated_duration,
+           tech.full_name AS technician_name,
+           asgn.status AS assignment_status
+    FROM appointments a
+    LEFT JOIN clients c ON a.client_id = c.client_id
+    LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
+    LEFT JOIN services s ON a.service_id = s.service_id
+    LEFT JOIN assignments asgn ON asgn.appointment_id = a.appointment_id
+    LEFT JOIN users tech ON asgn.technician_id = tech.user_id
+    ORDER BY a.appointment_date DESC
+")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -110,10 +86,8 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
 
             <!-- Page header -->
             <div class="page-header">
-                <h2><i class="fas fa-calendar-alt"></i> Appointments</h2>
-                <button class="btn btn-primary" onclick="openModal('addModal')">
-                    <i class="fas fa-plus"></i> Add Appointment
-                </button>
+                <h2><i class="fas fa-calendar-alt"></i> Appointments Monitor</h2>
+                <span class="badge badge-info" style="font-size:14px;padding:8px 16px;"><?= count($appointments) ?> Total</span>
             </div>
 
             <!-- Admin card with table -->
@@ -142,8 +116,11 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
                                 <th>ID</th>
                                 <th>Client</th>
                                 <th>Vehicle</th>
+                                <th>Service</th>
+                                <th>Technician</th>
                                 <th>Date/Time</th>
                                 <th>Status</th>
+                                <th>Progress</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -153,6 +130,14 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
                                 <td><?= htmlspecialchars($row['appointment_id']) ?></td>
                                 <td><?= htmlspecialchars($row['client_name'] ?? 'N/A') ?></td>
                                 <td><?= htmlspecialchars(($row['make'] ?? '') . ' ' . ($row['model'] ?? '') . ' - ' . ($row['plate_number'] ?? 'N/A')) ?></td>
+                                <td><?= htmlspecialchars($row['service_name'] ?? 'N/A') ?></td>
+                                <td>
+                                    <?php if ($row['technician_name']): ?>
+                                        <span style="color:#27ae60;"><i class="fas fa-user-check"></i> <?= htmlspecialchars($row['technician_name']) ?></span>
+                                    <?php else: ?>
+                                        <span style="color:#e67e22;"><i class="fas fa-clock"></i> Queued</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td><?= date('M d, Y h:i A', strtotime($row['appointment_date'])) ?></td>
                                 <td>
                                     <?php
@@ -163,15 +148,19 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
                                     ?>
                                     <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($row['status']) ?></span>
                                 </td>
+                                <td>
+                                    <?php if ($row['assignment_status']): ?>
+                                        <?php
+                                            $pBadge = 'badge-pending';
+                                            if ($row['assignment_status'] === 'Ongoing') $pBadge = 'badge-approved';
+                                            elseif ($row['assignment_status'] === 'Finished') $pBadge = 'badge-completed';
+                                        ?>
+                                        <span class="badge <?= $pBadge ?>"><?= htmlspecialchars($row['assignment_status']) ?></span>
+                                    <?php else: ?>
+                                        <span style="color:#aaa;">&mdash;</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td class="action-btns">
-                                    <button class="btn-icon btn-edit" onclick="editAppointment(
-                                        <?= $row['appointment_id'] ?>,
-                                        <?= $row['client_id'] ?>,
-                                        <?= $row['vehicle_id'] ?>,
-                                        '<?= date('Y-m-d\TH:i', strtotime($row['appointment_date'])) ?>',
-                                        '<?= htmlspecialchars($row['status'], ENT_QUOTES) ?>'
-                                    )"><i class="fas fa-edit"></i></button>
-
                                     <!-- Quick status change -->
                                     <form method="POST" style="display:inline" class="status-form">
                                         <input type="hidden" name="action" value="update_status">
@@ -204,106 +193,7 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
                 <?php endif; ?>
             </div>
 
-            <!-- Add Modal -->
-            <div class="modal-overlay" id="addModal">
-                <div class="modal">
-                    <div class="modal-header">
-                        <h3>Add Appointment</h3>
-                        <button class="modal-close" onclick="closeModal('addModal')">&times;</button>
-                    </div>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="add">
-                        <div class="modal-body">
-                            <div class="form-group">
-                                <label>Client</label>
-                                <select name="client_id" class="form-control" required>
-                                    <option value="">Select Client</option>
-                                    <?php foreach ($clients as $client): ?>
-                                        <option value="<?= $client['client_id'] ?>"><?= htmlspecialchars($client['full_name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Vehicle</label>
-                                <select name="vehicle_id" class="form-control" required>
-                                    <option value="">Select Vehicle</option>
-                                    <?php foreach ($vehicles as $vehicle): ?>
-                                        <option value="<?= $vehicle['vehicle_id'] ?>"><?= htmlspecialchars($vehicle['plate_number'] . ' - ' . $vehicle['make'] . ' ' . $vehicle['model']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Date/Time</label>
-                                <input type="datetime-local" name="appointment_date" class="form-control" required>
-                            </div>
-                            <div class="form-group">
-                                <label>Status</label>
-                                <select name="status" class="form-control" required>
-                                    <option value="Pending">Pending</option>
-                                    <option value="Approved">Approved</option>
-                                    <option value="Completed">Completed</option>
-                                    <option value="Cancelled">Cancelled</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button>
-                            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-
-            <!-- Edit Modal -->
-            <div class="modal-overlay" id="editModal">
-                <div class="modal">
-                    <div class="modal-header">
-                        <h3>Edit Appointment</h3>
-                        <button class="modal-close" onclick="closeModal('editModal')">&times;</button>
-                    </div>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="edit">
-                        <input type="hidden" name="appointment_id" id="edit_appointment_id">
-                        <div class="modal-body">
-                            <div class="form-group">
-                                <label>Client</label>
-                                <select name="client_id" id="edit_client_id" class="form-control" required>
-                                    <option value="">Select Client</option>
-                                    <?php foreach ($clients as $client): ?>
-                                        <option value="<?= $client['client_id'] ?>"><?= htmlspecialchars($client['full_name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Vehicle</label>
-                                <select name="vehicle_id" id="edit_vehicle_id" class="form-control" required>
-                                    <option value="">Select Vehicle</option>
-                                    <?php foreach ($vehicles as $vehicle): ?>
-                                        <option value="<?= $vehicle['vehicle_id'] ?>"><?= htmlspecialchars($vehicle['plate_number'] . ' - ' . $vehicle['make'] . ' ' . $vehicle['model']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Date/Time</label>
-                                <input type="datetime-local" name="appointment_date" id="edit_appointment_date" class="form-control" required>
-                            </div>
-                            <div class="form-group">
-                                <label>Status</label>
-                                <select name="status" id="edit_status" class="form-control" required>
-                                    <option value="Pending">Pending</option>
-                                    <option value="Approved">Approved</option>
-                                    <option value="Completed">Completed</option>
-                                    <option value="Cancelled">Cancelled</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
-                            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Update</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
+            <!-- Add Modal removed: appointments are auto-assigned from client bookings -->
 
         </div>
     </main>
@@ -311,23 +201,6 @@ $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id
 
 <script src="includes/admin.js"></script>
 <script>
-function openModal(id) {
-    document.getElementById(id).classList.add('active');
-}
-
-function closeModal(id) {
-    document.getElementById(id).classList.remove('active');
-}
-
-function editAppointment(appointmentId, clientId, vehicleId, appointmentDate, status) {
-    document.getElementById('edit_appointment_id').value = appointmentId;
-    document.getElementById('edit_client_id').value = clientId;
-    document.getElementById('edit_vehicle_id').value = vehicleId;
-    document.getElementById('edit_appointment_date').value = appointmentDate;
-    document.getElementById('edit_status').value = status;
-    openModal('editModal');
-}
-
 function searchTable() {
     var input = document.getElementById('searchInput').value.toLowerCase();
     var table = document.getElementById('appointmentsTable');

@@ -33,12 +33,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("DELETE FROM payments WHERE payment_id = ?")->execute([$_POST['payment_id']]);
             if ($old_inv) recalcInvoiceStatus($pdo, $old_inv);
             $success = 'Payment deleted.';
+        } elseif ($action === 'update_order_status') {
+            $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?")->execute([$_POST['status'], $_POST['order_id']]);
+            $success = 'Order status updated.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }
 }
 
 $payments = $pdo->query("SELECT p.*, i.total_amount as invoice_total, i.status as invoice_status, c.full_name as client_name FROM payments p LEFT JOIN invoices i ON p.invoice_id = i.invoice_id LEFT JOIN clients c ON i.client_id = c.client_id ORDER BY p.payment_date DESC")->fetchAll();
 $invoices = $pdo->query("SELECT i.invoice_id, i.total_amount, i.status, c.full_name as client_name FROM invoices i LEFT JOIN clients c ON i.client_id = c.client_id ORDER BY i.invoice_id DESC")->fetchAll();
+
+// Fetch e-wallet order payments
+$ewallet_orders = $pdo->query("SELECT o.*, c.full_name as client_name FROM orders o LEFT JOIN clients c ON o.client_id = c.client_id WHERE o.payment_method IN ('GCash', 'Maya') ORDER BY o.created_at DESC")->fetchAll();
+
+// Fetch all orders for the orders tab
+$all_orders = $pdo->query("SELECT o.*, c.full_name as client_name FROM orders o LEFT JOIN clients c ON o.client_id = c.client_id ORDER BY o.created_at DESC")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -57,9 +66,18 @@ $invoices = $pdo->query("SELECT i.invoice_id, i.total_amount, i.status, c.full_n
         <div class="admin-content">
             <?php if ($success): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div><?php endif; ?>
             <?php if ($error): ?><div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div><?php endif; ?>
-            <div class="page-header"><div><h1><i class="fas fa-credit-card"></i> Payments</h1><p>Track and process payments</p></div>
+            <div class="page-header"><div><h1><i class="fas fa-credit-card"></i> Payments</h1><p>Track and process all payments</p></div>
                 <button class="btn btn-primary" onclick="openModal('addModal')"><i class="fas fa-plus"></i> Record Payment</button></div>
-            <div class="admin-card">
+
+            <!-- Tabs -->
+            <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;">
+                <button class="btn btn-primary" id="tabInvoice" onclick="switchTab('invoice')"><i class="fas fa-file-invoice"></i> Invoice Payments</button>
+                <button class="btn btn-secondary" id="tabOrders" onclick="switchTab('orders')"><i class="fas fa-shopping-cart"></i> Order Payments (<?= count($all_orders) ?>)</button>
+                <button class="btn btn-secondary" id="tabEwallet" onclick="switchTab('ewallet')"><i class="fas fa-wallet"></i> E-Wallet Receipts (<?= count($ewallet_orders) ?>)</button>
+            </div>
+
+            <!-- Invoice Payments Tab -->
+            <div class="admin-card" id="invoiceTab">
                 <div class="table-toolbar"><div class="table-search"><i class="fas fa-search"></i><input type="text" placeholder="Search..." onkeyup="searchTable(this.value)"></div></div>
                 <div class="card-body" style="padding:0">
                     <?php if (empty($payments)): ?><div class="empty-state"><i class="fas fa-credit-card"></i><p>No payments recorded yet.</p></div>
@@ -78,6 +96,98 @@ $invoices = $pdo->query("SELECT i.invoice_id, i.total_amount, i.status, c.full_n
                     </tbody></table><?php endif; ?>
                 </div>
             </div>
+
+            <!-- Order Payments Tab -->
+            <div class="admin-card" id="ordersTab" style="display:none;">
+                <div class="card-body" style="padding:0">
+                    <?php if (empty($all_orders)): ?><div class="empty-state"><i class="fas fa-shopping-cart"></i><p>No orders yet.</p></div>
+                    <?php else: ?>
+                    <table class="admin-table"><thead><tr><th>Order #</th><th>Client</th><th>Type</th><th>Total</th><th>Method</th><th>Receipt</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($all_orders as $o): ?>
+                    <tr>
+                        <td>#<?= $o['order_id'] ?></td>
+                        <td><?= htmlspecialchars($o['client_name'] ?? 'N/A') ?></td>
+                        <td><span class="badge badge-info"><?= ucfirst($o['order_type']) ?></span></td>
+                        <td>₱<?= number_format($o['total_amount'],2) ?></td>
+                        <td>
+                            <?php if (in_array($o['payment_method'], ['GCash','Maya'])): ?>
+                                <span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> <?= htmlspecialchars($o['payment_method']) ?></span>
+                            <?php else: ?>
+                                <?= htmlspecialchars($o['payment_method'] ?? '-') ?>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if ($o['receipt_image']): ?>
+                                <a href="../uploads/<?= htmlspecialchars($o['receipt_image']) ?>" target="_blank" style="color:#27ae60;"><i class="fas fa-image"></i> View</a>
+                            <?php else: ?>
+                                <span style="color:#aaa;">None</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <form method="POST" style="display:inline;">
+                                <input type="hidden" name="action" value="update_order_status">
+                                <input type="hidden" name="order_id" value="<?= $o['order_id'] ?>">
+                                <select name="status" class="form-control" onchange="this.form.submit()" style="width:auto;display:inline-block;padding:4px 8px;font-size:12px;">
+                                    <option value="Pending" <?= $o['status'] === 'Pending' ? 'selected' : '' ?>>Pending</option>
+                                    <option value="Processing" <?= $o['status'] === 'Processing' ? 'selected' : '' ?>>Processing</option>
+                                    <option value="Completed" <?= $o['status'] === 'Completed' ? 'selected' : '' ?>>Completed</option>
+                                    <option value="Cancelled" <?= $o['status'] === 'Cancelled' ? 'selected' : '' ?>>Cancelled</option>
+                                </select>
+                            </form>
+                        </td>
+                        <td><?= date('M d, Y h:i A', strtotime($o['created_at'])) ?></td>
+                        <td>
+                            <?php if ($o['receipt_image']): ?>
+                                <a href="../uploads/<?= htmlspecialchars($o['receipt_image']) ?>" target="_blank" class="btn-icon btn-edit" title="View Receipt"><i class="fas fa-eye"></i></a>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table><?php endif; ?>
+                </div>
+            </div>
+
+            <!-- E-Wallet Receipts Tab -->
+            <div class="admin-card" id="ewalletTab" style="display:none;">
+                <div class="card-body" style="padding:0">
+                    <?php if (empty($ewallet_orders)): ?><div class="empty-state"><i class="fas fa-wallet"></i><p>No e-wallet payments yet.</p></div>
+                    <?php else: ?>
+                    <table class="admin-table"><thead><tr><th>Order #</th><th>Client</th><th>E-Wallet</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Date</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($ewallet_orders as $eo): ?>
+                    <tr>
+                        <td>#<?= $eo['order_id'] ?></td>
+                        <td><?= htmlspecialchars($eo['client_name'] ?? 'N/A') ?></td>
+                        <td><span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> <?= htmlspecialchars($eo['payment_method']) ?></span></td>
+                        <td style="font-weight:700;">₱<?= number_format($eo['total_amount'],2) ?></td>
+                        <td>
+                            <?php if ($eo['receipt_image']): ?>
+                                <a href="../uploads/<?= htmlspecialchars($eo['receipt_image']) ?>" target="_blank" style="display:inline-flex;align-items:center;gap:4px;color:#27ae60;font-weight:600;">
+                                    <i class="fas fa-image"></i> View Receipt
+                                </a>
+                            <?php else: ?>
+                                <span style="color:#e74c3c;"><i class="fas fa-exclamation-triangle"></i> Missing</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <form method="POST" style="display:inline;">
+                                <input type="hidden" name="action" value="update_order_status">
+                                <input type="hidden" name="order_id" value="<?= $eo['order_id'] ?>">
+                                <select name="status" class="form-control" onchange="this.form.submit()" style="width:auto;display:inline-block;padding:4px 8px;font-size:12px;">
+                                    <option value="Pending" <?= $eo['status'] === 'Pending' ? 'selected' : '' ?>>Pending</option>
+                                    <option value="Processing" <?= $eo['status'] === 'Processing' ? 'selected' : '' ?>>Processing</option>
+                                    <option value="Completed" <?= $eo['status'] === 'Completed' ? 'selected' : '' ?>>Completed</option>
+                                    <option value="Cancelled" <?= $eo['status'] === 'Cancelled' ? 'selected' : '' ?>>Cancelled</option>
+                                </select>
+                            </form>
+                        </td>
+                        <td><?= date('M d, Y h:i A', strtotime($eo['created_at'])) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table><?php endif; ?>
+                </div>
+            </div>
         </div>
     </main>
 </div>
@@ -85,14 +195,14 @@ $invoices = $pdo->query("SELECT i.invoice_id, i.total_amount, i.status, c.full_n
 <form method="POST"><input type="hidden" name="action" value="add"><div class="modal-body">
     <div class="form-group"><label>Invoice</label><select name="invoice_id" class="form-control" required><option value="">Select Invoice</option><?php foreach ($invoices as $inv): ?><option value="<?= $inv['invoice_id'] ?>">INV-<?= $inv['invoice_id'] ?> - <?= htmlspecialchars($inv['client_name'] ?? 'N/A') ?> - ₱<?= number_format($inv['total_amount'],2) ?> (<?= $inv['status'] ?>)</option><?php endforeach; ?></select></div>
     <div class="form-row"><div class="form-group"><label>Amount Paid</label><input type="number" name="amount_paid" class="form-control" step="0.01" min="0" required></div>
-    <div class="form-group"><label>Method</label><select name="payment_method" class="form-control" required><option value="Cash">Cash</option><option value="Card">Card</option><option value="GCash">GCash</option><option value="Bank Transfer">Bank Transfer</option></select></div></div>
+    <div class="form-group"><label>Method</label><select name="payment_method" class="form-control" required><option value="Cash">Cash</option><option value="GCash">GCash</option><option value="Maya">Maya</option></select></div></div>
     <div class="form-group"><label>Reference #</label><input type="text" name="reference_number" class="form-control" placeholder="Optional"></div>
 </div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button></div></form></div></div>
 <div class="modal-overlay" id="editModal"><div class="modal"><div class="modal-header"><h3>Edit Payment</h3><button class="modal-close" onclick="closeModal('editModal')">&times;</button></div>
 <form method="POST"><input type="hidden" name="action" value="edit"><input type="hidden" name="payment_id" id="edit_payment_id"><div class="modal-body">
     <div class="form-group"><label>Invoice</label><select name="invoice_id" id="edit_invoice_id" class="form-control" required><option value="">Select</option><?php foreach ($invoices as $inv): ?><option value="<?= $inv['invoice_id'] ?>">INV-<?= $inv['invoice_id'] ?> - <?= htmlspecialchars($inv['client_name'] ?? 'N/A') ?> - ₱<?= number_format($inv['total_amount'],2) ?></option><?php endforeach; ?></select></div>
     <div class="form-row"><div class="form-group"><label>Amount</label><input type="number" name="amount_paid" id="edit_amount_paid" class="form-control" step="0.01" min="0" required></div>
-    <div class="form-group"><label>Method</label><select name="payment_method" id="edit_payment_method" class="form-control" required><option value="Cash">Cash</option><option value="Card">Card</option><option value="GCash">GCash</option><option value="Bank Transfer">Bank Transfer</option></select></div></div>
+    <div class="form-group"><label>Method</label><select name="payment_method" id="edit_payment_method" class="form-control" required><option value="Cash">Cash</option><option value="GCash">GCash</option><option value="Maya">Maya</option></select></div></div>
     <div class="form-group"><label>Reference #</label><input type="text" name="reference_number" id="edit_reference_number" class="form-control"></div>
 </div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Update</button></div></form></div></div>
 <script src="includes/admin.js"></script>
@@ -102,5 +212,13 @@ function closeModal(id){document.getElementById(id).classList.remove('active');}
 document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('active');});});
 function editPayment(r){document.getElementById('edit_payment_id').value=r.payment_id;document.getElementById('edit_invoice_id').value=r.invoice_id;document.getElementById('edit_amount_paid').value=r.amount_paid;document.getElementById('edit_payment_method').value=r.payment_method;document.getElementById('edit_reference_number').value=r.reference_number||'';openModal('editModal');}
 function searchTable(q){q=q.toLowerCase();document.querySelectorAll('#dataTable tbody tr').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';});}
+function switchTab(tab){
+    document.getElementById('invoiceTab').style.display=tab==='invoice'?'':'none';
+    document.getElementById('ordersTab').style.display=tab==='orders'?'':'none';
+    document.getElementById('ewalletTab').style.display=tab==='ewallet'?'':'none';
+    document.getElementById('tabInvoice').className='btn '+(tab==='invoice'?'btn-primary':'btn-secondary');
+    document.getElementById('tabOrders').className='btn '+(tab==='orders'?'btn-primary':'btn-secondary');
+    document.getElementById('tabEwallet').className='btn '+(tab==='ewallet'?'btn-primary':'btn-secondary');
+}
 </script>
 </body></html>

@@ -85,6 +85,12 @@ if (!empty($orders)) {
 $cartStmt = $pdo->prepare("SELECT COUNT(*) FROM cart WHERE client_id = ?");
 $cartStmt->execute([$client_id]);
 $cartCount = $cartStmt->fetchColumn();
+
+// ── Unread notifications ──
+$user_id = $_SESSION['user_id'];
+$notifStmt = $pdo->prepare("SELECT * FROM notifications WHERE user_id = ? AND is_read = 0 ORDER BY created_at DESC LIMIT 5");
+$notifStmt->execute([$user_id]);
+$user_notifs = $notifStmt->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -505,6 +511,19 @@ $cartCount = $cartStmt->fetchColumn();
                 <i class="fas fa-check-circle"></i>
                 <span><?= htmlspecialchars($order_success) ?></span>
             </div>
+        <?php endif; ?>
+
+        <?php if (!empty($user_notifs)): ?>
+            <?php foreach ($user_notifs as $notif): ?>
+            <div class="alert-success" style="background:rgba(52,152,219,0.1);border-left:4px solid #3498db;margin-bottom:10px;">
+                <i class="fas fa-bell" style="color:#3498db;"></i>
+                <span><strong><?= htmlspecialchars($notif['title']) ?></strong> — <?= htmlspecialchars($notif['message']) ?></span>
+            </div>
+            <?php endforeach; ?>
+            <?php
+                // Mark displayed notifications as read
+                $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0")->execute([$user_id]);
+            ?>
         <?php endif; ?>
 
         <?php if (empty($orders)): ?>

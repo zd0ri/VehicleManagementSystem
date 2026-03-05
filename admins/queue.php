@@ -34,6 +34,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
             $success = 'Queue entry deleted successfully.';
         }
+        if ($action === 'notify_turn') {
+            $queue_id = (int) $_POST['queue_id'];
+            $queue_entry = $pdo->prepare("SELECT q.*, c.user_id AS client_user_id, c.full_name AS client_name FROM queue q LEFT JOIN clients c ON q.client_id = c.client_id WHERE q.queue_id = ?");
+            $queue_entry->execute([$queue_id]);
+            $qe = $queue_entry->fetch();
+
+            if ($qe && $qe['client_user_id']) {
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'It\\'s Your Turn!', 'Your vehicle is next in line for service. Please proceed to the service area.', 'queue_turn')")
+                    ->execute([$qe['client_user_id']]);
+
+                // Update queue status to Serving
+                $pdo->prepare("UPDATE queue SET status = 'Serving' WHERE queue_id = ?")->execute([$queue_id]);
+
+                // Try to auto-assign if there's a pending appointment
+                $pending_appt = $pdo->prepare("SELECT a.* FROM appointments a WHERE a.client_id = ? AND a.status = 'Pending' ORDER BY a.appointment_id ASC LIMIT 1");
+                $pending_appt->execute([$qe['client_id']]);
+                $queued_appt = $pending_appt->fetch();
+
+                if ($queued_appt) {
+                    // Find least busy technician
+                    $tech_stmt = $pdo->query("SELECT u.user_id, u.full_name, COUNT(a.assignment_id) AS active_count FROM users u LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing') WHERE u.role = 'technician' AND u.status = 'active' GROUP BY u.user_id ORDER BY active_count ASC LIMIT 1");
+                    $available_tech = $tech_stmt->fetch();
+
+                    if ($available_tech) {
+                        $pdo->prepare("UPDATE appointments SET status = 'Approved' WHERE appointment_id = ?")->execute([$queued_appt['appointment_id']]);
+                        $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')")
+                            ->execute([$queued_appt['appointment_id'], $queued_appt['vehicle_id'], $available_tech['user_id'], $queued_appt['service_id']]);
+
+                        // Notify assigned technician
+                        $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                        $svc->execute([$queued_appt['service_id']]);
+                        $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Service Assignment', ?, 'new_assignment')")
+                            ->execute([$available_tech['user_id'], 'You have been assigned: ' . $svc_name . ' for client ' . $qe['client_name'] . '.']);
+                    }
+                }
+
+                $success = 'Client "' . htmlspecialchars($qe['client_name']) . '" has been notified that it\'s their turn!';
+            } else {
+                $error = 'Could not find client information for this queue entry.';
+            }
+        }
         if ($action === 'move_up') {
             $cur = $pdo->prepare("SELECT queue_id, position FROM queue WHERE queue_id = ?");
             $cur->execute([$_POST['queue_id']]);
@@ -153,6 +195,9 @@ foreach ($queue as $q) {
                             <td class="action-btns">
                                 <form method="POST" style="display:inline"><input type="hidden" name="action" value="move_up"><input type="hidden" name="queue_id" value="<?= $row['queue_id'] ?>"><button type="submit" class="btn-icon btn-edit" title="Move Up" <?= $row['position'] <= 1 ? 'disabled' : '' ?>><i class="fas fa-arrow-up"></i></button></form>
                                 <form method="POST" style="display:inline"><input type="hidden" name="action" value="move_down"><input type="hidden" name="queue_id" value="<?= $row['queue_id'] ?>"><button type="submit" class="btn-icon btn-edit" title="Move Down" <?= $index >= count($queue) - 1 ? 'disabled' : '' ?>><i class="fas fa-arrow-down"></i></button></form>
+                                <?php if ($row['status'] === 'Waiting'): ?>
+                                <form method="POST" style="display:inline" onsubmit="return confirm('Notify this client that it is their turn?')"><input type="hidden" name="action" value="notify_turn"><input type="hidden" name="queue_id" value="<?= $row['queue_id'] ?>"><button type="submit" class="btn-icon" style="background:#27ae60;color:#fff;" title="Notify Client - Your Turn"><i class="fas fa-bell"></i></button></form>
+                                <?php endif; ?>
                                 <form method="POST" style="display:inline"><input type="hidden" name="action" value="update_status"><input type="hidden" name="queue_id" value="<?= $row['queue_id'] ?>">
                                     <select name="status" onchange="this.form.submit()" class="form-control" style="display:inline-block;width:auto;min-width:110px;padding:0.25rem 0.5rem;font-size:0.85rem;">
                                         <option value="Waiting" <?= $row['status'] === 'Waiting' ? 'selected' : '' ?>>Waiting</option>

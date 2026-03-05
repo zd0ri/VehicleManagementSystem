@@ -41,6 +41,16 @@
         </a>
 
         <div class="sidebar-section">GENERAL</div>
+        <a href="notifications.php" class="sidebar-link <?= ($current_page ?? '') === 'notifications' ? 'active' : '' ?>">
+            <i class="fas fa-bell"></i> <span>Notifications</span>
+            <?php
+                $notif_count = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+                $notif_count->execute([$_SESSION['user_id']]);
+                $unread_notifs = $notif_count->fetchColumn();
+                if ($unread_notifs > 0): ?>
+                <span class="link-badge urgent"><?= $unread_notifs ?></span>
+            <?php endif; ?>
+        </a>
         <a href="profile.php" class="sidebar-link <?= ($current_page ?? '') === 'profile' ? 'active' : '' ?>">
             <i class="fas fa-user-circle"></i> <span>My Profile</span>
         </a>

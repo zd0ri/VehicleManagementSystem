@@ -22,12 +22,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($new_status === 'Finished') {
                 $pdo->prepare("UPDATE assignments SET status = 'Finished', end_time = NOW() WHERE assignment_id = ? AND technician_id = ?")
                     ->execute([$assignment_id, $tid]);
+
+                // Also update the linked appointment status
+                $pdo->prepare("UPDATE appointments SET status = 'Completed' WHERE appointment_id = (SELECT appointment_id FROM assignments WHERE assignment_id = ?)")
+                    ->execute([$assignment_id]);
+
                 $success = 'Service completed! Great work.';
             }
         } elseif ($action === 'add_notes') {
             $pdo->prepare("UPDATE assignments SET notes = ? WHERE assignment_id = ? AND technician_id = ?")
                 ->execute([$_POST['notes'], $_POST['assignment_id'], $tid]);
             $success = 'Notes updated successfully.';
+        } elseif ($action === 'notify_done') {
+            $assignment_id = (int) $_POST['assignment_id'];
+            // Get assignment details with client info
+            $asgn = $pdo->prepare("
+                SELECT a.*, v.client_id, s.service_name, c.full_name AS client_name, c.user_id AS client_user_id
+                FROM assignments a
+                LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
+                LEFT JOIN services s ON a.service_id = s.service_id
+                LEFT JOIN clients c ON v.client_id = c.client_id
+                WHERE a.assignment_id = ? AND a.technician_id = ?
+            ");
+            $asgn->execute([$assignment_id, $tid]);
+            $asgn_data = $asgn->fetch();
+
+            if ($asgn_data && $asgn_data['client_user_id']) {
+                $svc_name = $asgn_data['service_name'] ?? 'vehicle service';
+                $tech_name = $_SESSION['full_name'] ?? 'Your technician';
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Service Completed!', ?, 'job_done')")
+                    ->execute([$asgn_data['client_user_id'], 'Your ' . $svc_name . ' has been completed by ' . $tech_name . '! You can now pick up your vehicle.']);
+
+                // Also notify all admins
+                $admins = $pdo->query("SELECT user_id FROM users WHERE role = 'admin' AND status = 'active'")->fetchAll();
+                foreach ($admins as $admin) {
+                    $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Service Completed', ?, 'job_done')")
+                        ->execute([$admin['user_id'], $tech_name . ' has completed ' . $svc_name . ' for client ' . ($asgn_data['client_name'] ?? 'N/A') . '.']);
+                }
+
+                // Check queue - if there are waiting clients, auto-assign
+                $waiting = $pdo->prepare("SELECT q.*, c2.user_id AS waiting_user_id FROM queue q LEFT JOIN clients c2 ON q.client_id = c2.client_id WHERE q.status = 'Waiting' ORDER BY q.position ASC LIMIT 1");
+                $waiting->execute();
+                $next_in_queue = $waiting->fetch();
+
+                if ($next_in_queue) {
+                    // Find pending appointment for this queued client
+                    $pending_appt = $pdo->prepare("SELECT * FROM appointments WHERE client_id = ? AND status = 'Pending' ORDER BY appointment_id ASC LIMIT 1");
+                    $pending_appt->execute([$next_in_queue['client_id']]);
+                    $queued_appt = $pending_appt->fetch();
+
+                    if ($queued_appt) {
+                        // Auto-assign the queued appointment to this technician
+                        $pdo->prepare("UPDATE appointments SET status = 'Approved' WHERE appointment_id = ?")->execute([$queued_appt['appointment_id']]);
+                        $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')")
+                            ->execute([$queued_appt['appointment_id'], $queued_appt['vehicle_id'], $tid, $queued_appt['service_id']]);
+                        $pdo->prepare("UPDATE queue SET status = 'Serving' WHERE queue_id = ?")->execute([$next_in_queue['queue_id']]);
+
+                        // Notify the queued client
+                        if ($next_in_queue['waiting_user_id']) {
+                            $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'It\\'s Your Turn!', 'A technician is now available for your vehicle service. Your appointment has been confirmed!', 'queue_turn')")
+                                ->execute([$next_in_queue['waiting_user_id']]);
+                        }
+                    }
+                }
+
+                $success = 'Client has been notified that their service is complete!';
+            } else {
+                $error = 'Could not find client information for this assignment.';
+            }
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }
 }
@@ -214,6 +276,14 @@ $cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician
                                     <span>In progress since <?= date('h:i A', strtotime($a['start_time'])) ?></span>
                                 </div>
                                 <?php endif; ?>
+                            <?php elseif ($a['status'] === 'Finished'): ?>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="action" value="notify_done">
+                                    <input type="hidden" name="assignment_id" value="<?= $a['assignment_id'] ?>">
+                                    <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('Send notification to the client that their service is complete?')" style="background:#27ae60;border-color:#27ae60;">
+                                        <i class="fas fa-bell"></i> Notify Client - Job Done
+                                    </button>
+                                </form>
                             <?php endif; ?>
 
                             <button class="btn btn-secondary btn-sm" onclick="openNotesModal(<?= $a['assignment_id'] ?>, '<?= addslashes($a['notes'] ?? '') ?>')">
