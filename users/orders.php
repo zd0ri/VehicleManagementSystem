@@ -481,11 +481,20 @@ $user_notifs = $notifStmt->fetchAll();
                     <li><a href="../index.php"><i class="fas fa-home"></i> Home</a></li>
                     <li><a href="../index.php#shop"><i class="fas fa-store"></i> Shop</a></li>
                     <li><a href="../index.php#services"><i class="fas fa-wrench"></i> Services</a></li>
+                    <li><a href="dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                     <li><a href="../index.php#about"><i class="fas fa-info-circle"></i> About</a></li>
                     <li><a href="../index.php#contact"><i class="fas fa-envelope"></i> Contact</a></li>
                 </ul>
             </nav>
             <div class="header-actions">
+                <a href="notifications.php" class="header-icon" title="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <?php
+                        $nStmt2 = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+                        $nStmt2->execute([$_SESSION['user_id']]);
+                        $nCount2 = (int)$nStmt2->fetchColumn();
+                        if ($nCount2 > 0): ?><span class="badge"><?= $nCount2 ?></span><?php endif; ?>
+                </a>
                 <a href="cart.php" class="header-icon" title="Cart">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="badge"><?= $cartCount ?></span>
@@ -555,7 +564,7 @@ $user_notifs = $notifStmt->fetchAll();
                         <div class="order-header-right">
                             <span class="order-payment">
                                 <i class="fas fa-credit-card"></i>
-                                <?= htmlspecialchars($order['payment_method']) ?>
+                                <?= in_array($order['payment_method'], ['GCash','Maya']) ? 'E-Wallet (' . htmlspecialchars($order['payment_method']) . ')' : htmlspecialchars($order['payment_method']) ?>
                             </span>
                             <span class="order-total">₱<?= number_format($order['total_amount'], 2) ?></span>
                             <i class="fas fa-chevron-down order-toggle-icon"></i>

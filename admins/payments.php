@@ -112,7 +112,7 @@ $all_orders = $pdo->query("SELECT o.*, c.full_name as client_name FROM orders o 
                         <td>₱<?= number_format($o['total_amount'],2) ?></td>
                         <td>
                             <?php if (in_array($o['payment_method'], ['GCash','Maya'])): ?>
-                                <span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> <?= htmlspecialchars($o['payment_method']) ?></span>
+                                <span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> E-Wallet (<?= htmlspecialchars($o['payment_method']) ?>)</span>
                             <?php else: ?>
                                 <?= htmlspecialchars($o['payment_method'] ?? '-') ?>
                             <?php endif; ?>
@@ -159,7 +159,7 @@ $all_orders = $pdo->query("SELECT o.*, c.full_name as client_name FROM orders o 
                     <tr>
                         <td>#<?= $eo['order_id'] ?></td>
                         <td><?= htmlspecialchars($eo['client_name'] ?? 'N/A') ?></td>
-                        <td><span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> <?= htmlspecialchars($eo['payment_method']) ?></span></td>
+                        <td><span style="color:#007bff;font-weight:600;"><i class="fas fa-wallet"></i> E-Wallet (<?= htmlspecialchars($eo['payment_method']) ?>)</span></td>
                         <td style="font-weight:700;">₱<?= number_format($eo['total_amount'],2) ?></td>
                         <td>
                             <?php if ($eo['receipt_image']): ?>
@@ -195,14 +195,14 @@ $all_orders = $pdo->query("SELECT o.*, c.full_name as client_name FROM orders o 
 <form method="POST"><input type="hidden" name="action" value="add"><div class="modal-body">
     <div class="form-group"><label>Invoice</label><select name="invoice_id" class="form-control" required><option value="">Select Invoice</option><?php foreach ($invoices as $inv): ?><option value="<?= $inv['invoice_id'] ?>">INV-<?= $inv['invoice_id'] ?> - <?= htmlspecialchars($inv['client_name'] ?? 'N/A') ?> - ₱<?= number_format($inv['total_amount'],2) ?> (<?= $inv['status'] ?>)</option><?php endforeach; ?></select></div>
     <div class="form-row"><div class="form-group"><label>Amount Paid</label><input type="number" name="amount_paid" class="form-control" step="0.01" min="0" required></div>
-    <div class="form-group"><label>Method</label><select name="payment_method" class="form-control" required><option value="Cash">Cash</option><option value="GCash">GCash</option><option value="Maya">Maya</option></select></div></div>
+    <div class="form-group"><label>Method</label><select name="payment_method" class="form-control" required><option value="Cash">Cash</option><optgroup label="E-Wallet"><option value="GCash">E-Wallet (GCash)</option><option value="Maya">E-Wallet (Maya)</option></optgroup></select></div></div>
     <div class="form-group"><label>Reference #</label><input type="text" name="reference_number" class="form-control" placeholder="Optional"></div>
 </div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button></div></form></div></div>
 <div class="modal-overlay" id="editModal"><div class="modal"><div class="modal-header"><h3>Edit Payment</h3><button class="modal-close" onclick="closeModal('editModal')">&times;</button></div>
 <form method="POST"><input type="hidden" name="action" value="edit"><input type="hidden" name="payment_id" id="edit_payment_id"><div class="modal-body">
     <div class="form-group"><label>Invoice</label><select name="invoice_id" id="edit_invoice_id" class="form-control" required><option value="">Select</option><?php foreach ($invoices as $inv): ?><option value="<?= $inv['invoice_id'] ?>">INV-<?= $inv['invoice_id'] ?> - <?= htmlspecialchars($inv['client_name'] ?? 'N/A') ?> - ₱<?= number_format($inv['total_amount'],2) ?></option><?php endforeach; ?></select></div>
     <div class="form-row"><div class="form-group"><label>Amount</label><input type="number" name="amount_paid" id="edit_amount_paid" class="form-control" step="0.01" min="0" required></div>
-    <div class="form-group"><label>Method</label><select name="payment_method" id="edit_payment_method" class="form-control" required><option value="Cash">Cash</option><option value="GCash">GCash</option><option value="Maya">Maya</option></select></div></div>
+    <div class="form-group"><label>Method</label><select name="payment_method" id="edit_payment_method" class="form-control" required><option value="Cash">Cash</option><optgroup label="E-Wallet"><option value="GCash">E-Wallet (GCash)</option><option value="Maya">E-Wallet (Maya)</option></optgroup></select></div></div>
     <div class="form-group"><label>Reference #</label><input type="text" name="reference_number" id="edit_reference_number" class="form-control"></div>
 </div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Update</button></div></form></div></div>
 <script src="includes/admin.js"></script>

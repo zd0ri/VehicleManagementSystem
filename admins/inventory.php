@@ -33,7 +33,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             if (!$error) {
-                $stmt = $pdo->prepare("INSERT INTO inventory (item_name, description, category, image, sku, quantity, unit_price, supplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $supplierId = (int)($_POST['supplier_id'] ?? 0) ?: null;
+                $supplierName = null;
+                if ($supplierId) {
+                    $sn = $pdo->prepare("SELECT supplier_name FROM suppliers WHERE supplier_id = ?");
+                    $sn->execute([$supplierId]);
+                    $supplierName = $sn->fetchColumn() ?: null;
+                }
+                $expiryDate = !empty($_POST['expiry_date']) ? $_POST['expiry_date'] : null;
+                $stmt = $pdo->prepare("INSERT INTO inventory (item_name, description, category, image, sku, quantity, unit_price, expiry_date, supplier, supplier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $_POST['item_name'],
                     $_POST['description'] ?: null,
@@ -42,7 +50,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $_POST['sku'] ?: null,
                     (int)$_POST['quantity'],
                     (float)$_POST['unit_price'],
-                    $_POST['supplier'] ?: null
+                    $expiryDate,
+                    $supplierName,
+                    $supplierId
                 ]);
                 $success = 'Item added successfully.';
             }
@@ -72,7 +82,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             if (!$error) {
-                $stmt = $pdo->prepare("UPDATE inventory SET item_name = ?, description = ?, category = ?, image = ?, sku = ?, quantity = ?, unit_price = ?, supplier = ? WHERE item_id = ?");
+                $supplierId = (int)($_POST['supplier_id'] ?? 0) ?: null;
+                $supplierName = null;
+                if ($supplierId) {
+                    $sn = $pdo->prepare("SELECT supplier_name FROM suppliers WHERE supplier_id = ?");
+                    $sn->execute([$supplierId]);
+                    $supplierName = $sn->fetchColumn() ?: null;
+                }
+                $expiryDate = !empty($_POST['expiry_date']) ? $_POST['expiry_date'] : null;
+                $stmt = $pdo->prepare("UPDATE inventory SET item_name = ?, description = ?, category = ?, image = ?, sku = ?, quantity = ?, unit_price = ?, expiry_date = ?, supplier = ?, supplier_id = ? WHERE item_id = ?");
                 $stmt->execute([
                     $_POST['item_name'],
                     $_POST['description'] ?: null,
@@ -81,7 +99,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $_POST['sku'] ?: null,
                     (int)$_POST['quantity'],
                     (float)$_POST['unit_price'],
-                    $_POST['supplier'] ?: null,
+                    $expiryDate,
+                    $supplierName,
+                    $supplierId,
                     (int)$_POST['item_id']
                 ]);
                 $success = 'Item updated successfully.';
@@ -127,14 +147,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// Fetch all inventory items
+// Fetch all inventory items with supplier info
 $items = [];
 try {
-    $result = $pdo->query("SELECT * FROM inventory ORDER BY item_name");
+    $result = $pdo->query("SELECT i.*, s.supplier_name AS linked_supplier_name FROM inventory i LEFT JOIN suppliers s ON i.supplier_id = s.supplier_id ORDER BY i.item_name");
     $items = $result->fetchAll();
 } catch (Exception $e) {
     $error = 'Failed to fetch inventory: ' . $e->getMessage();
 }
+
+// Fetch active suppliers for dropdown
+$suppliersList = $pdo->query("SELECT supplier_id, supplier_name FROM suppliers WHERE status = 'active' ORDER BY supplier_name")->fetchAll();
 
 // Count low stock items (quantity <= 5)
 $lowStockCount = 0;
@@ -210,6 +233,7 @@ try {
                                 <th>Category</th>
                                 <th>Qty</th>
                                 <th>Unit Price</th>
+                                <th>Expiry Date</th>
                                 <th>Supplier</th>
                                 <th>Actions</th>
                             </tr>
@@ -235,7 +259,36 @@ try {
                                     </span>
                                 </td>
                                 <td>₱<?= number_format((float)$row['unit_price'], 2) ?></td>
-                                <td><?= htmlspecialchars($row['supplier'] ?? '—') ?></td>
+                                <td>
+                                    <?php if ($row['expiry_date']): ?>
+                                        <?php
+                                        $expDate = new DateTime($row['expiry_date']);
+                                        $today = new DateTime();
+                                        $diff = $today->diff($expDate);
+                                        $daysLeft = (int)$expDate->format('U') - (int)$today->format('U');
+                                        $daysLeft = (int)floor($daysLeft / 86400);
+                                        if ($daysLeft < 0): ?>
+                                            <span style="color:#e74c3c;font-weight:700;"><i class="fas fa-exclamation-circle"></i> Expired</span>
+                                            <br><small style="color:#e74c3c;"><?= $expDate->format('M d, Y') ?></small>
+                                        <?php elseif ($daysLeft <= 30): ?>
+                                            <span style="color:#f39c12;font-weight:600;"><i class="fas fa-clock"></i> <?= $daysLeft ?> day<?= $daysLeft !== 1 ? 's' : '' ?></span>
+                                            <br><small style="color:#f39c12;"><?= $expDate->format('M d, Y') ?></small>
+                                        <?php else: ?>
+                                            <span style="color:#27ae60;"><?= $expDate->format('M d, Y') ?></span>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <span style="color:#bdc3c7;">—</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($row['linked_supplier_name']): ?>
+                                        <a href="suppliers.php" style="color:#3498db;text-decoration:none;font-weight:500;"><?= htmlspecialchars($row['linked_supplier_name']) ?></a>
+                                    <?php elseif ($row['supplier']): ?>
+                                        <?= htmlspecialchars($row['supplier']) ?>
+                                    <?php else: ?>
+                                        —
+                                    <?php endif; ?>
+                                </td>
                                 <td class="action-btns">
                                     <button class="btn-icon btn-edit" title="Edit" onclick="editItem(
                                         <?= $row['item_id'] ?>,
@@ -246,7 +299,9 @@ try {
                                         '<?= htmlspecialchars(addslashes($row['sku'] ?? ''), ENT_QUOTES) ?>',
                                         <?= (int)$row['quantity'] ?>,
                                         '<?= htmlspecialchars($row['unit_price'], ENT_QUOTES) ?>',
-                                        '<?= htmlspecialchars(addslashes($row['supplier'] ?? ''), ENT_QUOTES) ?>'
+                                        '<?= htmlspecialchars(addslashes($row['supplier'] ?? ''), ENT_QUOTES) ?>',
+                                        <?= (int)($row['supplier_id'] ?? 0) ?>,
+                                        '<?= htmlspecialchars($row['expiry_date'] ?? '', ENT_QUOTES) ?>'
                                     )"><i class="fas fa-edit"></i></button>
                                     <button class="btn-icon btn-view" title="Restock" onclick="restockItem(<?= $row['item_id'] ?>, '<?= htmlspecialchars(addslashes($row['item_name']), ENT_QUOTES) ?>')">
                                         <i class="fas fa-plus"></i>
@@ -310,8 +365,17 @@ try {
                                 <input type="number" name="unit_price" class="form-control" step="0.01" min="0" required>
                             </div>
                             <div class="form-group">
+                                <label>Expiry Date <small style="color:#888;">(for oils, fluids, consumables)</small></label>
+                                <input type="date" name="expiry_date" class="form-control">
+                            </div>
+                            <div class="form-group">
                                 <label>Supplier</label>
-                                <input type="text" name="supplier" class="form-control">
+                                <select name="supplier_id" class="form-control">
+                                    <option value="">-- No Supplier --</option>
+                                    <?php foreach ($suppliersList as $sup): ?>
+                                    <option value="<?= $sup['supplier_id'] ?>"><?= htmlspecialchars($sup['supplier_name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </div>
                         </div>
                         <div class="modal-footer">
@@ -365,8 +429,17 @@ try {
                                 <input type="number" name="unit_price" id="edit_unit_price" class="form-control" step="0.01" min="0" required>
                             </div>
                             <div class="form-group">
+                                <label>Expiry Date <small style="color:#888;">(for oils, fluids, consumables)</small></label>
+                                <input type="date" name="expiry_date" id="edit_expiry_date" class="form-control">
+                            </div>
+                            <div class="form-group">
                                 <label>Supplier</label>
-                                <input type="text" name="supplier" id="edit_supplier" class="form-control">
+                                <select name="supplier_id" id="edit_supplier_id" class="form-control">
+                                    <option value="">-- No Supplier --</option>
+                                    <?php foreach ($suppliersList as $sup): ?>
+                                    <option value="<?= $sup['supplier_id'] ?>"><?= htmlspecialchars($sup['supplier_name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </div>
                         </div>
                         <div class="modal-footer">
@@ -416,7 +489,7 @@ function closeModal(id) {
     document.getElementById(id).classList.remove('active');
 }
 
-function editItem(itemId, itemName, description, category, image, sku, quantity, unitPrice, supplier) {
+function editItem(itemId, itemName, description, category, image, sku, quantity, unitPrice, supplier, supplierId, expiryDate) {
     document.getElementById('edit_item_id').value = itemId;
     document.getElementById('edit_item_name').value = itemName;
     document.getElementById('edit_description').value = description;
@@ -425,7 +498,8 @@ function editItem(itemId, itemName, description, category, image, sku, quantity,
     document.getElementById('edit_sku').value = sku;
     document.getElementById('edit_quantity').value = quantity;
     document.getElementById('edit_unit_price').value = unitPrice;
-    document.getElementById('edit_supplier').value = supplier;
+    document.getElementById('edit_supplier_id').value = supplierId || '';
+    document.getElementById('edit_expiry_date').value = expiryDate || '';
 
     // Image preview
     var previewDiv = document.getElementById('edit_image_preview');

@@ -40,11 +40,20 @@
         <a href="inventory.php" class="sidebar-link <?= ($current_page ?? '') === 'inventory' ? 'active' : '' ?>">
             <i class="fas fa-boxes-stacked"></i> <span>Inventory</span>
         </a>
+        <a href="suppliers.php" class="sidebar-link <?= ($current_page ?? '') === 'suppliers' ? 'active' : '' ?>">
+            <i class="fas fa-truck-field"></i> <span>Suppliers</span>
+        </a>
+        <a href="purchase_orders.php" class="sidebar-link <?= ($current_page ?? '') === 'purchase_orders' ? 'active' : '' ?>">
+            <i class="fas fa-cart-shopping"></i> <span>Purchase Orders</span>
+        </a>
         <a href="services.php" class="sidebar-link <?= ($current_page ?? '') === 'services' ? 'active' : '' ?>">
             <i class="fas fa-wrench"></i> <span>Services</span>
         </a>
 
         <div class="sidebar-section">FINANCIAL</div>
+        <a href="transactions.php" class="sidebar-link <?= ($current_page ?? '') === 'transactions' ? 'active' : '' ?>">
+            <i class="fas fa-exchange-alt"></i> <span>Transactions</span>
+        </a>
         <a href="payments.php" class="sidebar-link <?= ($current_page ?? '') === 'payments' ? 'active' : '' ?>">
             <i class="fas fa-credit-card"></i> <span>Payments</span>
         </a>

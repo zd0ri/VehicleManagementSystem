@@ -90,6 +90,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $error = 'Could not find client information for this assignment.';
             }
+        } elseif ($action === 'use_parts') {
+            $assignment_id = (int) $_POST['assignment_id'];
+            $item_id = (int) $_POST['item_id'];
+            $qty = (int) $_POST['qty'];
+
+            // Verify assignment belongs to this technician and is active
+            $verify = $pdo->prepare("SELECT assignment_id FROM assignments WHERE assignment_id = ? AND technician_id = ? AND status IN ('Assigned','Ongoing')");
+            $verify->execute([$assignment_id, $tid]);
+            if (!$verify->fetch()) { throw new Exception('Assignment not found or already finished.'); }
+
+            if ($qty < 1) { throw new Exception('Quantity must be at least 1.'); }
+
+            // Check stock availability with row lock
+            $pdo->beginTransaction();
+            $stock = $pdo->prepare("SELECT quantity, item_name FROM inventory WHERE item_id = ? FOR UPDATE");
+            $stock->execute([$item_id]);
+            $item = $stock->fetch();
+            if (!$item) { $pdo->rollBack(); throw new Exception('Item not found in inventory.'); }
+            if ($item['quantity'] < $qty) { $pdo->rollBack(); throw new Exception('Not enough stock for "' . $item['item_name'] . '". Available: ' . $item['quantity']); }
+
+            // Deduct from inventory
+            $pdo->prepare("UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?")->execute([$qty, $item_id]);
+
+            // Record parts usage
+            $pdo->prepare("INSERT INTO parts_used (assignment_id, item_id, quantity) VALUES (?, ?, ?)")->execute([$assignment_id, $item_id, $qty]);
+
+            $pdo->commit();
+            $success = 'Used ' . $qty . 'x "' . htmlspecialchars($item['item_name']) . '" — stock updated.';
+
+        } elseif ($action === 'remove_part') {
+            $parts_used_id = (int) $_POST['parts_used_id'];
+
+            // Verify the part usage belongs to this technician's assignment
+            $verify = $pdo->prepare("SELECT pu.*, a.technician_id FROM parts_used pu JOIN assignments a ON pu.assignment_id = a.assignment_id WHERE pu.parts_used_id = ? AND a.technician_id = ?");
+            $verify->execute([$parts_used_id, $tid]);
+            $part = $verify->fetch();
+            if (!$part) { throw new Exception('Part usage record not found.'); }
+
+            // Restore stock
+            $pdo->prepare("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ?")->execute([$part['quantity'], $part['item_id']]);
+            $pdo->prepare("DELETE FROM parts_used WHERE parts_used_id = ?")->execute([$parts_used_id]);
+
+            $success = 'Part removed and stock restored.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }
 }
@@ -116,6 +159,17 @@ $cnt_all = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id =
 $cnt_assigned = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Assigned'"); $cnt_assigned->execute([$tid]); $cnt_assigned = $cnt_assigned->fetchColumn();
 $cnt_ongoing = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Ongoing'"); $cnt_ongoing->execute([$tid]); $cnt_ongoing = $cnt_ongoing->fetchColumn();
 $cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id = ? AND status = 'Finished'"); $cnt_finished->execute([$tid]); $cnt_finished = $cnt_finished->fetchColumn();
+
+// Available inventory items for "Use Parts" dropdown
+$inventory_items = $pdo->query("SELECT item_id, item_name, quantity, unit_price FROM inventory WHERE quantity > 0 ORDER BY item_name ASC")->fetchAll();
+
+// Parts used per assignment
+$parts_by_assignment = [];
+$all_parts = $pdo->prepare("SELECT pu.*, i.item_name, i.unit_price FROM parts_used pu JOIN inventory i ON pu.item_id = i.item_id JOIN assignments a ON pu.assignment_id = a.assignment_id WHERE a.technician_id = ? ORDER BY pu.created_at DESC");
+$all_parts->execute([$tid]);
+foreach ($all_parts->fetchAll() as $p) {
+    $parts_by_assignment[$p['assignment_id']][] = $p;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -250,6 +304,49 @@ $cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician
                         </div>
                         <?php endif; ?>
 
+                        <!-- Parts Used -->
+                        <?php $used_parts = $parts_by_assignment[$a['assignment_id']] ?? []; ?>
+                        <?php if (!empty($used_parts)): ?>
+                        <div style="margin-top:16px;">
+                            <h4 style="font-size:13px;color:var(--tech-text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+                                <i class="fas fa-boxes-stacked" style="color:var(--primary)"></i> Parts Used
+                            </h4>
+                            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                                <thead><tr style="background:var(--tech-surface-2);color:var(--tech-text-muted);">
+                                    <th style="padding:8px;text-align:left;">Item</th>
+                                    <th style="padding:8px;text-align:center;">Qty</th>
+                                    <th style="padding:8px;text-align:right;">Unit Price</th>
+                                    <th style="padding:8px;text-align:right;">Total</th>
+                                    <?php if ($a['status'] !== 'Finished'): ?><th style="padding:8px;text-align:center;">Action</th><?php endif; ?>
+                                </tr></thead>
+                                <tbody>
+                                <?php $parts_total = 0; foreach ($used_parts as $up): $line_total = $up['quantity'] * $up['unit_price']; $parts_total += $line_total; ?>
+                                <tr style="border-bottom:1px solid var(--tech-border);">
+                                    <td style="padding:8px;color:var(--tech-text);"><?= htmlspecialchars($up['item_name']) ?></td>
+                                    <td style="padding:8px;text-align:center;color:var(--tech-text);"><?= $up['quantity'] ?></td>
+                                    <td style="padding:8px;text-align:right;color:var(--tech-text-dim);">₱<?= number_format($up['unit_price'], 2) ?></td>
+                                    <td style="padding:8px;text-align:right;color:var(--tech-text);">₱<?= number_format($line_total, 2) ?></td>
+                                    <?php if ($a['status'] !== 'Finished'): ?>
+                                    <td style="padding:8px;text-align:center;">
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Remove this part and restore stock?')">
+                                            <input type="hidden" name="action" value="remove_part">
+                                            <input type="hidden" name="parts_used_id" value="<?= $up['parts_used_id'] ?>">
+                                            <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
+                                        </form>
+                                    </td>
+                                    <?php endif; ?>
+                                </tr>
+                                <?php endforeach; ?>
+                                <tr style="font-weight:600;">
+                                    <td style="padding:8px;" colspan="3">Parts Total</td>
+                                    <td style="padding:8px;text-align:right;color:var(--primary);">₱<?= number_format($parts_total, 2) ?></td>
+                                    <?php if ($a['status'] !== 'Finished'): ?><td></td><?php endif; ?>
+                                </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <?php endif; ?>
+
                         <!-- Actions -->
                         <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                             <?php if ($a['status'] === 'Assigned'): ?>
@@ -289,6 +386,12 @@ $cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician
                             <button class="btn btn-secondary btn-sm" onclick="openNotesModal(<?= $a['assignment_id'] ?>, '<?= addslashes($a['notes'] ?? '') ?>')">
                                 <i class="fas fa-sticky-note"></i> <?= $a['notes'] ? 'Edit Notes' : 'Add Notes' ?>
                             </button>
+
+                            <?php if ($a['status'] !== 'Finished'): ?>
+                            <button class="btn btn-secondary btn-sm" onclick="openPartsModal(<?= $a['assignment_id'] ?>)" style="background:#8e44ad;border-color:#8e44ad;color:#fff;">
+                                <i class="fas fa-boxes-stacked"></i> Use Parts
+                            </button>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -322,6 +425,39 @@ $cnt_finished = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician
     </div>
 </div>
 
+<!-- Use Parts Modal -->
+<div class="modal-overlay" id="partsModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="fas fa-boxes-stacked"></i> Use Parts from Inventory</h3>
+            <button class="modal-close" onclick="closeModal('partsModal')">&times;</button>
+        </div>
+        <form method="POST">
+            <input type="hidden" name="action" value="use_parts">
+            <input type="hidden" name="assignment_id" id="parts_assignment_id">
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Select Item</label>
+                    <select name="item_id" class="form-control" required>
+                        <option value="">-- Select an item --</option>
+                        <?php foreach ($inventory_items as $inv): ?>
+                        <option value="<?= $inv['item_id'] ?>"><?= htmlspecialchars($inv['item_name']) ?> — Stock: <?= $inv['quantity'] ?> (₱<?= number_format($inv['unit_price'], 2) ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Quantity</label>
+                    <input type="number" name="qty" class="form-control" min="1" value="1" required>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('partsModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary" style="background:#8e44ad;border-color:#8e44ad;"><i class="fas fa-minus-circle"></i> Deduct from Stock</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <script src="includes/tech.js"></script>
 <script>
 function openModal(id) { document.getElementById(id).classList.add('active'); }
@@ -332,6 +468,11 @@ function openNotesModal(assignmentId, notes) {
     document.getElementById('notes_assignment_id').value = assignmentId;
     document.getElementById('notes_text').value = notes;
     openModal('notesModal');
+}
+
+function openPartsModal(assignmentId) {
+    document.getElementById('parts_assignment_id').value = assignmentId;
+    openModal('partsModal');
 }
 </script>
 </body>

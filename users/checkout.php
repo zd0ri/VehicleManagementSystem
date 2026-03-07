@@ -113,9 +113,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
         // Create order record
         $stmtOrder = $pdo->prepare("
             INSERT INTO orders (client_id, order_type, vehicle_id, subtotal, tax_amount, total_amount, status, payment_method, receipt_image, notes, created_at)
-            VALUES (?, ?, NULL, ?, ?, ?, 'Pending', ?, ?, ?, NOW())
+            VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NOW())
         ");
-        $stmtOrder->execute([$client_id, $order_type, $subtotal, $tax, $total, $pay_method, $receipt_image, $notes]);
+        $order_status = (in_array($pay_method, ['GCash', 'Maya']) && $receipt_image) ? 'Completed' : 'Pending';
+        $stmtOrder->execute([$client_id, $order_type, $subtotal, $tax, $total, $order_status, $pay_method, $receipt_image, $notes]);
         $order_id = $pdo->lastInsertId();
 
         // Create order items and decrease inventory
@@ -577,11 +578,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                     <li><a href="../index.php"><i class="fas fa-home"></i> Home</a></li>
                     <li><a href="../index.php#shop"><i class="fas fa-store"></i> Shop</a></li>
                     <li><a href="../index.php#services"><i class="fas fa-wrench"></i> Services</a></li>
+                    <li><a href="dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                     <li><a href="../index.php#about"><i class="fas fa-info-circle"></i> About</a></li>
                     <li><a href="../index.php#contact"><i class="fas fa-envelope"></i> Contact</a></li>
                 </ul>
             </nav>
             <div class="header-actions">
+                <a href="notifications.php" class="header-icon" title="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <?php
+                        $nStmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+                        $nStmt->execute([$_SESSION['user_id']]);
+                        $nCount = (int)$nStmt->fetchColumn();
+                        if ($nCount > 0): ?><span class="badge"><?= $nCount ?></span><?php endif; ?>
+                </a>
                 <a href="cart.php" class="header-icon" title="Cart">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="badge"><?= $cartCount ?></span>
@@ -693,9 +703,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                     <div class="form-group">
                         <label><i class="fas fa-wallet"></i> Payment Method</label>
                         <select name="payment_method" id="paymentMethod" required onchange="toggleReceipt()">
-                            <option value="Cash">Cash - Pay on Pickup/Delivery</option>
-                            <option value="GCash">GCash (E-Wallet)</option>
-                            <option value="Maya">Maya (E-Wallet)</option>
+                            <option value="Cash">Cash</option>
+                            <optgroup label="E-Wallet">
+                                <option value="GCash">E-Wallet (GCash)</option>
+                                <option value="Maya">E-Wallet (Maya)</option>
+                            </optgroup>
                         </select>
                     </div>
 

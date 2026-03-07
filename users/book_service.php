@@ -35,23 +35,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if (!$chk->fetch()) {
                 $error = 'Invalid vehicle selected.';
             } else {
+                // Get service duration for time-slot conflict check
+                $durStmt = $pdo->prepare("SELECT COALESCE(estimated_duration, 60) FROM services WHERE service_id = ?");
+                $durStmt->execute([$service_id]);
+                $svcDuration = (int)$durStmt->fetchColumn() ?: 60;
+
+                $reqStart = strtotime($appointment_date);
+                $reqEnd   = $reqStart + ($svcDuration * 60);
+
+                // Check for overlapping appointments
+                $overlapStmt = $pdo->prepare("
+                    SELECT ap.appointment_id, ap.appointment_date, COALESCE(s.estimated_duration, 60) AS duration
+                    FROM appointments ap
+                    LEFT JOIN services s ON ap.service_id = s.service_id
+                    WHERE DATE(ap.appointment_date) = DATE(?)
+                      AND ap.status IN ('Pending','Approved')
+                ");
+                $overlapStmt->execute([$appointment_date]);
+                $timeConflict = false;
+                foreach ($overlapStmt->fetchAll() as $existing) {
+                    $exStart = strtotime($existing['appointment_date']);
+                    $exEnd   = $exStart + ($existing['duration'] * 60);
+                    if ($reqStart < $exEnd && $reqEnd > $exStart) {
+                        $suggestTime = date('h:i A', $exEnd);
+                        $error = 'This time slot is already booked. The earliest available time after this slot is ' . $suggestTime . '. Please choose a different time.';
+                        $timeConflict = true;
+                        break;
+                    }
+                }
+
+                if (!$timeConflict) {
                 try {
                     $pdo->beginTransaction();
 
-                    // Find least busy available technician
+                    // Find least busy available technician (with NO ongoing assignments)
                     $tech_stmt = $pdo->query("
                         SELECT u.user_id, u.full_name,
-                               COUNT(a.assignment_id) AS active_count
+                               COUNT(a.assignment_id) AS active_count,
+                               SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
                         FROM users u
                         LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing')
                         WHERE u.role = 'technician' AND u.status = 'active'
                         GROUP BY u.user_id
-                        ORDER BY active_count ASC
-                        LIMIT 1
+                        ORDER BY ongoing_count ASC, active_count ASC
                     ");
-                    $available_tech = $tech_stmt->fetch();
+                    $all_techs = $tech_stmt->fetchAll();
 
-                    if ($available_tech) {
+                    $free_tech = null;
+                    $least_busy_tech = null;
+                    foreach ($all_techs as $t) {
+                        if (!$least_busy_tech) $least_busy_tech = $t;
+                        if ((int)$t['ongoing_count'] === 0) {
+                            $free_tech = $t;
+                            break;
+                        }
+                    }
+
+                    $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                    $svc->execute([$service_id]);
+                    $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+
+                    if ($free_tech) {
                         // Auto-assign: create appointment as Approved
                         $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, ?, 'Approved', ?, ?)");
                         $stmt->execute([$client_id, $vehicle_id, $service_id, $appointment_date, $notes, $user_id]);
@@ -59,19 +103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                         // Create assignment for technician
                         $stmt = $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')");
-                        $stmt->execute([$appointment_id, $vehicle_id, $available_tech['user_id'], $service_id]);
+                        $stmt->execute([$appointment_id, $vehicle_id, $free_tech['user_id'], $service_id]);
 
-                        // Notify the technician
-                        $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
-                        $svc->execute([$service_id]);
-                        $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
                         $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Service Assignment', ?, 'new_assignment')")
-                            ->execute([$available_tech['user_id'], 'You have been assigned: ' . $svc_name . '. Scheduled for ' . date('M d, Y h:i A', strtotime($appointment_date)) . '.']);
+                            ->execute([$free_tech['user_id'], 'You have been assigned: ' . $svc_name . '. Scheduled for ' . date('M d, Y h:i A', strtotime($appointment_date)) . '.']);
 
                         $pdo->commit();
-                        $success = 'Appointment booked and assigned to technician ' . htmlspecialchars($available_tech['full_name']) . '!';
+                        $success = 'Appointment booked and assigned to technician ' . htmlspecialchars($free_tech['full_name']) . '!';
                     } else {
-                        // No technician available — queue the client
+                        // All technicians have ongoing work — queue with assigned tech info
+                        $assigned_tech = $least_busy_tech;
                         $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, ?, 'Pending', ?, ?)");
                         $stmt->execute([$client_id, $vehicle_id, $service_id, $appointment_date, $notes, $user_id]);
 
@@ -79,16 +120,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')")
                             ->execute([$vehicle_id, $client_id, $next_pos]);
 
-                        // Notify client about queue
+                        $tech_name = $assigned_tech ? htmlspecialchars($assigned_tech['full_name']) : 'a technician';
+                        $queueMsg = 'All technicians are currently busy with ongoing services. You have been placed in queue position #' . $next_pos . '. Your assigned technician will be ' . $tech_name . '. We will notify you once they are available.';
+
                         $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Queued', ?, 'queue')")
-                            ->execute([$user_id, 'All technicians are currently busy. You are in queue position #' . $next_pos . '. We will notify you when it\'s your turn.']);
+                            ->execute([$user_id, $queueMsg]);
 
                         $pdo->commit();
-                        $success = 'All technicians are currently busy. You have been added to the queue at position #' . $next_pos . '. We will notify you when it\'s your turn.';
+                        $error = $queueMsg;
                     }
                 } catch (Exception $e) {
                     $pdo->rollBack();
                     $error = 'Failed to book appointment: ' . $e->getMessage();
+                }
                 }
             }
         }
@@ -642,11 +686,16 @@ $cartCount = $cartStmt->fetchColumn();
                     <li><a href="../index.php"><i class="fas fa-home"></i> Home</a></li>
                     <li><a href="../index.php#shop"><i class="fas fa-store"></i> Shop</a></li>
                     <li><a href="../index.php#services"><i class="fas fa-wrench"></i> Services</a></li>
+                    <li><a href="dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                     <li><a href="../index.php#about"><i class="fas fa-info-circle"></i> About</a></li>
                     <li><a href="../index.php#contact"><i class="fas fa-envelope"></i> Contact</a></li>
                 </ul>
             </nav>
             <div class="header-actions">
+                <a href="notifications.php" class="header-icon" title="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <?php if ($notifCount > 0): ?><span class="badge"><?= $notifCount ?></span><?php endif; ?>
+                </a>
                 <a href="cart.php" class="header-icon" title="Cart">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="badge"><?= $cartCount ?></span>

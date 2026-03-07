@@ -70,12 +70,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
         exit;
     }
 
+    // Handle AJAX check_timeslot — returns booked slots for a given date
+    if ($_POST['ajax_action'] === 'check_timeslot') {
+        $date = trim($_POST['date'] ?? '');
+        if (!$date) { echo json_encode(['success' => false]); exit; }
+        $dayStart = date('Y-m-d 00:00:00', strtotime($date));
+        $dayEnd   = date('Y-m-d 23:59:59', strtotime($date));
+        $slots = $pdo->prepare("
+            SELECT ap.appointment_date, COALESCE(s.estimated_duration, 60) AS duration
+            FROM appointments ap
+            LEFT JOIN services s ON ap.service_id = s.service_id
+            WHERE ap.appointment_date BETWEEN ? AND ?
+              AND ap.status IN ('Pending','Approved')
+            ORDER BY ap.appointment_date
+        ");
+        $slots->execute([$dayStart, $dayEnd]);
+        $booked = [];
+        foreach ($slots->fetchAll() as $sl) {
+            $start = strtotime($sl['appointment_date']);
+            $end   = $start + ($sl['duration'] * 60);
+            $booked[] = ['start' => date('H:i', $start), 'end' => date('H:i', $end)];
+        }
+        echo json_encode(['success' => true, 'booked' => $booked]);
+        exit;
+    }
+
     // Handle AJAX book_appointment
     if ($_POST['ajax_action'] === 'book_appointment') {
         $vehicle_id = (int)($_POST['vehicle_id'] ?? 0);
+        $service_id = (int)($_POST['service_id'] ?? 0);
         $appointment_date = trim($_POST['appointment_date'] ?? '');
-        if (!$vehicle_id || !$appointment_date) {
-            echo json_encode(['success' => false, 'message' => 'Please select a vehicle and appointment date/time.']);
+        if (!$vehicle_id || !$service_id || !$appointment_date) {
+            echo json_encode(['success' => false, 'message' => 'Please select a service, vehicle, and appointment date/time.']);
             exit;
         }
         $chk = $pdo->prepare("SELECT vehicle_id FROM vehicles WHERE vehicle_id = ? AND client_id = ?");
@@ -84,9 +110,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
             echo json_encode(['success' => false, 'message' => 'Invalid vehicle selected.']);
             exit;
         }
-        $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, appointment_date, status, created_by) VALUES (?, ?, ?, 'Pending', ?)");
-        $stmt->execute([$clientId, $vehicle_id, $appointment_date, $_SESSION['user_id']]);
-        echo json_encode(['success' => true, 'message' => 'Appointment booked successfully! We will confirm it shortly.']);
+
+        // Get service duration for time-slot conflict check
+        $durStmt = $pdo->prepare("SELECT COALESCE(estimated_duration, 60) FROM services WHERE service_id = ?");
+        $durStmt->execute([$service_id]);
+        $svcDuration = (int)$durStmt->fetchColumn() ?: 60;
+
+        $reqStart = strtotime($appointment_date);
+        $reqEnd   = $reqStart + ($svcDuration * 60);
+
+        // Check for overlapping appointments on the same date
+        $overlapStmt = $pdo->prepare("
+            SELECT ap.appointment_id, ap.appointment_date, COALESCE(s.estimated_duration, 60) AS duration
+            FROM appointments ap
+            LEFT JOIN services s ON ap.service_id = s.service_id
+            WHERE DATE(ap.appointment_date) = DATE(?)
+              AND ap.status IN ('Pending','Approved')
+        ");
+        $overlapStmt->execute([$appointment_date]);
+        foreach ($overlapStmt->fetchAll() as $existing) {
+            $exStart = strtotime($existing['appointment_date']);
+            $exEnd   = $exStart + ($existing['duration'] * 60);
+            if ($reqStart < $exEnd && $reqEnd > $exStart) {
+                $suggestTime = date('h:i A', $exEnd);
+                echo json_encode(['success' => false, 'message' => 'This time slot is already booked. The earliest available time after this slot is ' . $suggestTime . '. Please choose a different time.']);
+                exit;
+            }
+        }
+
+        try {
+            $pdo->beginTransaction();
+
+            // Find least busy available technician (with NO ongoing assignments)
+            $tech_stmt = $pdo->query("
+                SELECT u.user_id, u.full_name,
+                       COUNT(a.assignment_id) AS active_count,
+                       SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
+                FROM users u
+                LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing')
+                WHERE u.role = 'technician' AND u.status = 'active'
+                GROUP BY u.user_id
+                ORDER BY ongoing_count ASC, active_count ASC
+            ");
+            $all_techs = $tech_stmt->fetchAll();
+
+            // Find a tech with zero ongoing assignments
+            $free_tech = null;
+            $least_busy_tech = null;
+            foreach ($all_techs as $t) {
+                if (!$least_busy_tech) $least_busy_tech = $t;
+                if ((int)$t['ongoing_count'] === 0) {
+                    $free_tech = $t;
+                    break;
+                }
+            }
+
+            $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+            $svc->execute([$service_id]);
+            $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+
+            if ($free_tech) {
+                // Technician available — auto-assign
+                $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, created_by) VALUES (?, ?, ?, ?, 'Approved', ?)");
+                $stmt->execute([$clientId, $vehicle_id, $service_id, $appointment_date, $_SESSION['user_id']]);
+                $appointment_id = $pdo->lastInsertId();
+
+                $stmt = $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')");
+                $stmt->execute([$appointment_id, $vehicle_id, $free_tech['user_id'], $service_id]);
+
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Service Assignment', ?, 'new_assignment')")
+                    ->execute([$free_tech['user_id'], 'You have been assigned: ' . $svc_name . '. Scheduled for ' . date('M d, Y h:i A', strtotime($appointment_date)) . '.']);
+
+                $pdo->commit();
+                echo json_encode(['success' => true, 'message' => 'Appointment booked and assigned to technician ' . $free_tech['full_name'] . '!']);
+            } else {
+                // All technicians have ongoing work — queue with assigned tech info
+                $assigned_tech = $least_busy_tech;
+                $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, created_by) VALUES (?, ?, ?, ?, 'Pending', ?)");
+                $stmt->execute([$clientId, $vehicle_id, $service_id, $appointment_date, $_SESSION['user_id']]);
+                $appointment_id = $pdo->lastInsertId();
+
+                $next_pos = (int) $pdo->query("SELECT COALESCE(MAX(position), 0) + 1 FROM queue WHERE status IN ('Waiting','Serving')")->fetchColumn();
+                $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')")
+                    ->execute([$vehicle_id, $clientId, $next_pos]);
+
+                $tech_name = $assigned_tech ? $assigned_tech['full_name'] : 'a technician';
+                $queueMsg = 'All technicians are currently busy with ongoing services. You have been placed in queue position #' . $next_pos . '. Your assigned technician will be ' . $tech_name . '. We will notify you once they are available.';
+
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Queued', ?, 'queue')")
+                    ->execute([$_SESSION['user_id'], $queueMsg]);
+
+                $pdo->commit();
+                echo json_encode(['success' => false, 'message' => $queueMsg]);
+            }
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            echo json_encode(['success' => false, 'message' => 'Booking failed: ' . $e->getMessage()]);
+        }
         exit;
     }
 
@@ -169,7 +289,6 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                 <?php if ($_SESSION['role'] === 'customer'): ?>
                     <a href="users/profile.php"><i class="fas fa-user-circle"></i> My Profile</a>
                     <a href="users/orders.php"><i class="fas fa-box"></i> My Orders</a>
-                    <a href="users/book_service.php"><i class="fas fa-calendar-check"></i> Book Service</a>
                 <?php endif; ?>
                 <a href="users/logout.php"><i class="fas fa-sign-out-alt"></i> Logout (<?= htmlspecialchars($_SESSION['full_name']) ?>)</a>
             <?php else: ?>
@@ -217,6 +336,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     </li>
                     <li><a href="#about"><i class="fas fa-info-circle"></i> About</a></li>
                     <li><a href="#contact"><i class="fas fa-envelope"></i> Contact</a></li>
+                    <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'customer'): ?>
+                    <li><a href="users/dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <?php endif; ?>
                 </ul>
             </nav>
 
@@ -226,6 +348,16 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <input type="text" placeholder="Search products..." id="productSearch">
                     <button><i class="fas fa-search"></i></button>
                 </div>
+                <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'customer'): ?>
+                <a href="users/notifications.php" class="header-icon" title="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <?php
+                        $nStmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+                        $nStmt->execute([$_SESSION['user_id']]);
+                        $nCount = (int)$nStmt->fetchColumn();
+                        if ($nCount > 0): ?><span class="badge"><?= $nCount ?></span><?php endif; ?>
+                </a>
+                <?php endif; ?>
                 <a href="users/cart.php" class="header-icon" title="Cart">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="badge" id="cartBadge"><?= $cartCount ?></span>
@@ -527,7 +659,6 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <div class="service-price">Starting at <strong>₱<?= number_format($svc['base_price'], 2) ?></strong><?= $duration ? " &middot; ~{$duration}" : '' ?></div>
                     <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;">
                         <button class="btn btn-outline" onclick="bookService(<?= $svc['service_id'] ?>, '<?= htmlspecialchars($svc['service_name'], ENT_QUOTES) ?>')"><i class="fas fa-calendar-check"></i> Book Now</button>
-                        <button class="btn btn-outline btn-add-service-cart" data-service-id="<?= $svc['service_id'] ?>" style="border-color:var(--primary);color:var(--primary);"><i class="fas fa-cart-plus"></i></button>
                     </div>
                 </div>
                 <?php endforeach; ?>
@@ -1030,6 +1161,10 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
             <div class="form-group">
                 <label><i class="fas fa-calendar-alt"></i> Preferred Date &amp; Time <span class="req">*</span></label>
                 <input type="datetime-local" id="bookDate" class="form-control">
+                <div id="bookedSlotsInfo" style="margin-top:8px;display:none;">
+                    <div style="font-size:12px;font-weight:600;color:#e74c3c;margin-bottom:4px;"><i class="fas fa-exclamation-triangle"></i> Already booked time slots on this date:</div>
+                    <div id="bookedSlotsList" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+                </div>
             </div>
 
             <button type="button" class="btn-submit" id="btnSubmitBooking" onclick="submitBooking()">
@@ -1304,6 +1439,12 @@ function openBookingModal(serviceId) {
     dt.min = `${y}-${m}-${d}T08:00`;
     if (!dt.value) dt.value = `${y}-${m}-${d}T09:00`;
 
+    // Check booked slots for default date
+    checkBookedSlots(dt.value);
+
+    // Listen for date changes
+    dt.addEventListener('change', function() { checkBookedSlots(this.value); });
+
     // Fetch vehicles
     fetchVehicles();
 }
@@ -1388,6 +1529,31 @@ function submitAddVehicle() {
         }
     })
     .catch(() => showBookingAlert('Error adding vehicle.', 'error'));
+}
+
+function checkBookedSlots(dateVal) {
+    const infoDiv = document.getElementById('bookedSlotsInfo');
+    const listDiv = document.getElementById('bookedSlotsList');
+    if (!dateVal) { infoDiv.style.display = 'none'; return; }
+
+    const fd = new FormData();
+    fd.append('ajax_action', 'check_timeslot');
+    fd.append('date', dateVal);
+    fetch('index.php', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.booked.length > 0) {
+            listDiv.innerHTML = data.booked.map(s =>
+                `<span style="display:inline-block;padding:4px 10px;background:#ffeaea;color:#c0392b;border-radius:20px;font-size:12px;font-weight:600;border:1px solid #f5c6cb;">
+                    <i class="fas fa-clock"></i> ${s.start} – ${s.end}
+                </span>`
+            ).join('');
+            infoDiv.style.display = 'block';
+        } else {
+            infoDiv.style.display = 'none';
+        }
+    })
+    .catch(() => { infoDiv.style.display = 'none'; });
 }
 
 function submitBooking() {

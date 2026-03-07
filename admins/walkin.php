@@ -21,22 +21,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         try {
             $client_id = $_POST['client_id'];
             $vehicle_id = $_POST['vehicle_id'];
+            $service_id = (int)($_POST['service_id'] ?? 0);
             $notes = $_POST['notes'] ?? '';
 
-            // 1. Get next queue position
-            $stmt = $pdo->query("SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM queue WHERE status IN ('Waiting','Serving')");
-            $next_pos = $stmt->fetchColumn();
+            $pdo->beginTransaction();
 
-            // 2. Insert appointment with status 'Approved'
-            $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, appointment_date, status, created_by) VALUES (?, ?, NOW(), 'Approved', ?)");
-            $stmt->execute([$client_id, $vehicle_id, $_SESSION['user_id']]);
+            // Find least busy available technician (with NO ongoing assignments)
+            $tech_stmt = $pdo->query("
+                SELECT u.user_id, u.full_name,
+                       COUNT(a.assignment_id) AS active_count,
+                       SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
+                FROM users u
+                LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing')
+                WHERE u.role = 'technician' AND u.status = 'active'
+                GROUP BY u.user_id
+                ORDER BY ongoing_count ASC, active_count ASC
+            ");
+            $all_techs = $tech_stmt->fetchAll();
 
-            // 3. Insert into queue
-            $stmt = $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')");
-            $stmt->execute([$vehicle_id, $client_id, $next_pos]);
+            $free_tech = null;
+            $least_busy_tech = null;
+            foreach ($all_techs as $t) {
+                if (!$least_busy_tech) $least_busy_tech = $t;
+                if ((int)$t['ongoing_count'] === 0) {
+                    $free_tech = $t;
+                    break;
+                }
+            }
 
-            $success = 'Walk-in booking added successfully. Queue position: #' . $next_pos;
+            $svc_name = 'Walk-In Service';
+            if ($service_id) {
+                $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                $svc->execute([$service_id]);
+                $svc_name = $svc->fetchColumn() ?: $svc_name;
+            }
+
+            if ($free_tech) {
+                // Auto-assign: create appointment + assignment
+                $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, NOW(), 'Approved', ?, ?)");
+                $stmt->execute([$client_id, $vehicle_id, $service_id ?: null, $notes, $_SESSION['user_id']]);
+                $appointment_id = $pdo->lastInsertId();
+
+                $stmt = $pdo->prepare("INSERT INTO assignments (appointment_id, vehicle_id, technician_id, service_id, status) VALUES (?, ?, ?, ?, 'Assigned')");
+                $stmt->execute([$appointment_id, $vehicle_id, $free_tech['user_id'], $service_id ?: null]);
+
+                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Walk-In Assignment', ?, 'new_assignment')")
+                    ->execute([$free_tech['user_id'], 'Walk-in assigned to you: ' . $svc_name . '.']);
+
+                // Also add to queue for tracking
+                $next_pos = (int) $pdo->query("SELECT COALESCE(MAX(position), 0) + 1 FROM queue WHERE status IN ('Waiting','Serving')")->fetchColumn();
+                $stmt = $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Serving')");
+                $stmt->execute([$vehicle_id, $client_id, $next_pos]);
+
+                $pdo->commit();
+                $success = 'Walk-in assigned to technician ' . htmlspecialchars($free_tech['full_name']) . '. Queue position: #' . $next_pos;
+            } else {
+                // All technicians have ongoing work — queue with tech info
+                $assigned_tech = $least_busy_tech;
+                $stmt = $pdo->prepare("INSERT INTO appointments (client_id, vehicle_id, service_id, appointment_date, status, notes, created_by) VALUES (?, ?, ?, NOW(), 'Pending', ?, ?)");
+                $stmt->execute([$client_id, $vehicle_id, $service_id ?: null, $notes, $_SESSION['user_id']]);
+
+                $next_pos = (int) $pdo->query("SELECT COALESCE(MAX(position), 0) + 1 FROM queue WHERE status IN ('Waiting','Serving')")->fetchColumn();
+                $stmt = $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')");
+                $stmt->execute([$vehicle_id, $client_id, $next_pos]);
+
+                $pdo->commit();
+                $tech_name = $assigned_tech ? htmlspecialchars($assigned_tech['full_name']) : 'a technician';
+                $success = 'All technicians are currently busy. Walk-in queued at position #' . $next_pos . '. Assigned technician will be ' . $tech_name . '.';
+            }
         } catch (Exception $e) {
+            $pdo->rollBack();
             $error = 'Failed to add walk-in: ' . $e->getMessage();
         }
     }
@@ -91,6 +145,7 @@ $walkins = $pdo->query("SELECT q.*, c.full_name AS client_name, v.plate_number, 
 // Fetch clients and vehicles for dropdowns
 $clients = $pdo->query("SELECT client_id, full_name FROM clients ORDER BY full_name")->fetchAll();
 $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model, client_id FROM vehicles ORDER BY plate_number")->fetchAll();
+$services = $pdo->query("SELECT service_id, service_name, base_price FROM services ORDER BY service_name")->fetchAll();
 
 $todayCount = count($walkins);
 ?>
@@ -259,6 +314,15 @@ $todayCount = count($walkins);
                                         <option value="<?= $vehicle['vehicle_id'] ?>" data-client="<?= $vehicle['client_id'] ?>">
                                             <?= htmlspecialchars($vehicle['plate_number'] . ' - ' . $vehicle['make'] . ' ' . $vehicle['model']) ?>
                                         </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Service</label>
+                                <select name="service_id" class="form-control">
+                                    <option value="">-- Select Service (optional) --</option>
+                                    <?php foreach ($services as $svc): ?>
+                                        <option value="<?= $svc['service_id'] ?>"><?= htmlspecialchars($svc['service_name']) ?> — ₱<?= number_format($svc['base_price'], 2) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                             </div>

@@ -16,6 +16,22 @@ $total_services = $pdo->query("SELECT COUNT(*) FROM services")->fetchColumn();
 $total_queue = $pdo->query("SELECT COUNT(*) FROM queue WHERE status='Waiting'")->fetchColumn();
 $total_technicians = $pdo->query("SELECT COUNT(*) FROM users WHERE role='technician'")->fetchColumn();
 
+// Expiring / Expired inventory items
+$expiry_items = $pdo->query("
+    SELECT item_id, item_name, category, quantity, expiry_date,
+           DATEDIFF(expiry_date, CURDATE()) AS days_left
+    FROM inventory 
+    WHERE expiry_date IS NOT NULL
+    ORDER BY expiry_date ASC
+")->fetchAll();
+
+$expired_count = 0;
+$expiring_soon_count = 0;
+foreach ($expiry_items as $ei) {
+    if ((int)$ei['days_left'] < 0) $expired_count++;
+    elseif ((int)$ei['days_left'] <= 30) $expiring_soon_count++;
+}
+
 // Recent appointments
 $recent_appointments = $pdo->query("
     SELECT a.*, c.full_name as client_name, v.plate_number, v.make, v.model
@@ -188,6 +204,72 @@ $recent_queue = $pdo->query("
                     </div>
                 </div>
             </div>
+
+            <!-- Expiry Tracking -->
+            <?php if (!empty($expiry_items)): ?>
+            <div class="admin-card" style="margin-top:24px;">
+                <div class="card-header">
+                    <h3><i class="fas fa-clock" style="color:#e74c3c;"></i> Item Expiry Tracking
+                        <?php if ($expired_count > 0): ?>
+                            <span class="badge badge-ongoing" style="margin-left:8px;font-size:11px;"><?= $expired_count ?> Expired</span>
+                        <?php endif; ?>
+                        <?php if ($expiring_soon_count > 0): ?>
+                            <span class="badge badge-assigned" style="margin-left:4px;font-size:11px;background:rgba(243,156,18,0.15);color:#f39c12;"><?= $expiring_soon_count ?> Expiring Soon</span>
+                        <?php endif; ?>
+                    </h3>
+                    <a href="inventory.php" class="card-link">View Inventory <i class="fas fa-arrow-right"></i></a>
+                </div>
+                <div class="card-body">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Category</th>
+                                <th>Stock</th>
+                                <th>Expiry Date</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($expiry_items as $ei):
+                                $daysLeft = (int)$ei['days_left'];
+                            ?>
+                            <tr style="<?= $daysLeft < 0 ? 'background:rgba(231,76,60,0.05);' : ($daysLeft <= 30 ? 'background:rgba(243,156,18,0.05);' : '') ?>">
+                                <td><strong><?= htmlspecialchars($ei['item_name']) ?></strong></td>
+                                <td><?= htmlspecialchars($ei['category'] ?? '—') ?></td>
+                                <td><?= (int)$ei['quantity'] ?></td>
+                                <td><?= date('M d, Y', strtotime($ei['expiry_date'])) ?></td>
+                                <td>
+                                    <?php if ($daysLeft < 0): ?>
+                                        <span style="color:#e74c3c;font-weight:700;"><i class="fas fa-exclamation-circle"></i> Expired <?= abs($daysLeft) ?> day<?= abs($daysLeft) !== 1 ? 's' : '' ?> ago</span>
+                                    <?php elseif ($daysLeft === 0): ?>
+                                        <span style="color:#e74c3c;font-weight:700;"><i class="fas fa-exclamation-triangle"></i> Expires Today!</span>
+                                    <?php elseif ($daysLeft <= 7): ?>
+                                        <span style="color:#e67e22;font-weight:600;"><i class="fas fa-clock"></i> <?= $daysLeft ?> day<?= $daysLeft !== 1 ? 's' : '' ?> left</span>
+                                    <?php elseif ($daysLeft <= 30): ?>
+                                        <span style="color:#f39c12;font-weight:500;"><i class="fas fa-clock"></i> <?= $daysLeft ?> days left</span>
+                                    <?php else: ?>
+                                        <span style="color:#27ae60;"><i class="fas fa-check-circle"></i> <?= $daysLeft ?> days left</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($daysLeft < 0): ?>
+                                        <a href="purchase_orders.php" class="btn btn-primary" style="font-size:12px;padding:5px 12px;"><i class="fas fa-shopping-cart"></i> Restock</a>
+                                    <?php elseif ($daysLeft <= 30): ?>
+                                        <a href="purchase_orders.php" class="btn btn-secondary" style="font-size:12px;padding:5px 12px;"><i class="fas fa-shopping-cart"></i> Plan Restock</a>
+                                    <?php else: ?>
+                                        <span style="color:#27ae60;font-size:12px;"><i class="fas fa-thumbs-up"></i> OK</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
+
         </div>
     </main>
 </div>
