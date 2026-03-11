@@ -12,18 +12,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $user_id = !empty($_POST['user_id']) ? $_POST['user_id'] : null;
             $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, is_read) VALUES (?,?,?,0)");
             $stmt->execute([$user_id, $_POST['title'], $_POST['message']]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created notification', 'notifications', $new_id);
             $success = 'Notification sent successfully.';
         } elseif ($action === 'mark_read') {
             $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE notification_id = ?")->execute([$_POST['notification_id']]);
+            logAudit($pdo, 'Marked notification as read', 'notifications', $_POST['notification_id']);
             $success = 'Notification marked as read.';
         } elseif ($action === 'mark_all_read') {
             $pdo->exec("UPDATE notifications SET is_read = 1 WHERE is_read = 0");
+            logAudit($pdo, 'Marked all notifications as read', 'notifications', null);
             $success = 'All notifications marked as read.';
         } elseif ($action === 'delete') {
             $pdo->prepare("DELETE FROM notifications WHERE notification_id = ?")->execute([$_POST['notification_id']]);
+            logAudit($pdo, 'Deleted notification', 'notifications', $_POST['notification_id']);
             $success = 'Notification deleted.';
         } elseif ($action === 'delete_all_read') {
             $pdo->exec("DELETE FROM notifications WHERE is_read = 1");
+            logAudit($pdo, 'Deleted all read notifications', 'notifications', null);
             $success = 'All read notifications deleted.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }

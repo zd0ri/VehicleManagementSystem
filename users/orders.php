@@ -502,6 +502,9 @@ $user_notifs = $notifStmt->fetchAll();
                 <a href="orders.php" class="header-icon" title="My Orders" style="margin-left: 8px;">
                     <i class="fas fa-receipt"></i>
                 </a>
+                <a href="invoices.php" class="header-icon" title="My Invoices">
+                    <i class="fas fa-file-invoice-dollar"></i>
+                </a>
             </div>
             <button class="mobile-toggle" id="mobileToggle">
                 <i class="fas fa-bars"></i>

@@ -20,16 +20,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $notes = $_POST['notes'] ?: null;
             $stmt = $pdo->prepare("INSERT INTO assignments (vehicle_id, technician_id, service_id, status, start_time, notes) VALUES (?, ?, ?, ?, ?, ?)");
             $stmt->execute([$_POST['vehicle_id'], $_POST['technician_id'], $_POST['service_id'], $status, $start_time, $notes]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created assignment', 'assignments', $new_id);
             $success = 'Assignment added successfully.';
         }
         if ($action === 'edit') {
             $notes = $_POST['notes'] ?: null;
             $stmt = $pdo->prepare("UPDATE assignments SET vehicle_id = ?, technician_id = ?, service_id = ?, status = ?, notes = ? WHERE assignment_id = ?");
             $stmt->execute([$_POST['vehicle_id'], $_POST['technician_id'], $_POST['service_id'], $_POST['status'], $notes, $_POST['assignment_id']]);
+            logAudit($pdo, 'Updated assignment', 'assignments', $_POST['assignment_id']);
             $success = 'Assignment updated successfully.';
         }
         if ($action === 'delete') {
             $pdo->prepare("DELETE FROM assignments WHERE assignment_id = ?")->execute([$_POST['assignment_id']]);
+            logAudit($pdo, 'Deleted assignment', 'assignments', $_POST['assignment_id']);
             $success = 'Assignment deleted successfully.';
         }
         if ($action === 'update_status') {
@@ -42,6 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             } else {
                 $pdo->prepare("UPDATE assignments SET status = ? WHERE assignment_id = ?")->execute([$new_status, $id]);
             }
+            logAudit($pdo, 'Updated assignment status to ' . $new_status, 'assignments', $id);
             $success = 'Status updated successfully.';
         }
     } catch (Exception $e) {
@@ -51,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 $assignments = $pdo->query("SELECT a.*, v.plate_number, v.make, v.model, v.year, v.color, u.full_name AS technician_name, s.service_name, s.base_price,
     c.full_name AS customer_name, c.email AS customer_email, c.user_id AS customer_id,
-    ap.appointment_date, ap.status AS appointment_status
+    ap.appointment_date, ap.status AS appointment_status, COALESCE(ap.appointment_type, 'Online') AS appointment_type
     FROM assignments a 
     LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id 
     LEFT JOIN users u ON a.technician_id = u.user_id 
@@ -106,15 +111,27 @@ foreach ($parts_q->fetchAll() as $p) {
                         <option value="Ongoing">Ongoing</option>
                         <option value="Finished">Finished</option>
                     </select>
+                    <select id="typeFilter" onchange="searchTable()" class="form-control" style="width:auto;">
+                        <option value="">All Types</option>
+                        <option value="Online">Online Booking</option>
+                        <option value="Walk-In">Walk-In</option>
+                    </select>
                 </div>
                 <?php if (count($assignments) > 0): ?>
                 <div class="table-responsive">
                     <table class="admin-table" id="assignmentsTable">
-                        <thead><tr><th>ID</th><th>Customer</th><th>Vehicle</th><th>Technician</th><th>Service</th><th>Status</th><th>Start</th><th>End</th><th>Notes</th><th>Parts Used</th><th>Actions</th></tr></thead>
+                        <thead><tr><th>ID</th><th>Type</th><th>Customer</th><th>Vehicle</th><th>Technician</th><th>Service</th><th>Status</th><th>Start</th><th>End</th><th>Notes</th><th>Parts Used</th><th>Actions</th></tr></thead>
                         <tbody>
                         <?php foreach ($assignments as $row): ?>
-                        <tr data-status="<?= htmlspecialchars($row['status']) ?>">
+                        <tr data-status="<?= htmlspecialchars($row['status']) ?>" data-type="<?= htmlspecialchars($row['appointment_type']) ?>">
                             <td><?= $row['assignment_id'] ?></td>
+                            <td>
+                                <?php if ($row['appointment_type'] === 'Walk-In'): ?>
+                                    <span class="badge" style="background:#e67e22;color:#fff;font-size:11px;"><i class="fas fa-walking"></i> Walk-In</span>
+                                <?php else: ?>
+                                    <span class="badge" style="background:#3498db;color:#fff;font-size:11px;"><i class="fas fa-globe"></i> Online</span>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <span style="font-weight:500;"><?= htmlspecialchars($row['customer_name'] ?? 'N/A') ?></span><br>
                                 <small style="color:#888;"><?= htmlspecialchars($row['customer_email'] ?? '') ?></small>
@@ -280,12 +297,14 @@ function editAssignment(id,vid,tid,sid,status,notes){
 function searchTable(){
     var q=document.getElementById('searchInput').value.toLowerCase();
     var sf=document.getElementById('statusFilter').value;
+    var tf=document.getElementById('typeFilter').value;
     var t=document.getElementById('assignmentsTable');if(!t)return;
     var rows=t.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for(var i=0;i<rows.length;i++){
         var text=rows[i].textContent.toLowerCase();
         var rs=rows[i].getAttribute('data-status');
-        rows[i].style.display=(text.indexOf(q)>-1&&(!sf||rs===sf))?'':'none';
+        var rt=rows[i].getAttribute('data-type');
+        rows[i].style.display=(text.indexOf(q)>-1&&(!sf||rs===sf)&&(!tf||rt===tf))?'':'none';
     }
 }
 document.querySelectorAll('.modal-overlay').forEach(function(o){o.addEventListener('click',function(e){if(e.target===o)o.classList.remove('active');});});

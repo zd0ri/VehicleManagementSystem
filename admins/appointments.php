@@ -23,6 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $_POST['status'],
                 $_POST['appointment_id']
             ]);
+            logAudit($pdo, 'Updated appointment status to ' . $_POST['status'], 'appointments', $_POST['appointment_id']);
             $success = 'Appointment status updated successfully.';
         } catch (Exception $e) {
             $error = 'Failed to update status: ' . $e->getMessage();
@@ -33,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         try {
             $stmt = $pdo->prepare("DELETE FROM appointments WHERE appointment_id = ?");
             $stmt->execute([$_POST['appointment_id']]);
+            logAudit($pdo, 'Deleted appointment', 'appointments', $_POST['appointment_id']);
             $success = 'Appointment deleted successfully.';
         } catch (Exception $e) {
             $error = 'Failed to delete appointment: ' . $e->getMessage();
@@ -45,7 +47,8 @@ $appointments = $pdo->query("
     SELECT a.*, c.full_name AS client_name, v.plate_number, v.make, v.model,
            s.service_name, s.estimated_duration,
            tech.full_name AS technician_name,
-           asgn.status AS assignment_status
+           asgn.status AS assignment_status,
+           COALESCE(a.appointment_type, 'Online') AS appointment_type
     FROM appointments a
     LEFT JOIN clients c ON a.client_id = c.client_id
     LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
@@ -106,6 +109,13 @@ $appointments = $pdo->query("
                             <option value="Cancelled">Cancelled</option>
                         </select>
                     </div>
+                    <div class="filter-box">
+                        <select id="typeFilter" onchange="filterByStatus()">
+                            <option value="">All Types</option>
+                            <option value="Online">Online Booking</option>
+                            <option value="Walk-In">Walk-In</option>
+                        </select>
+                    </div>
                 </div>
 
                 <?php if (count($appointments) > 0): ?>
@@ -114,6 +124,7 @@ $appointments = $pdo->query("
                         <thead>
                             <tr>
                                 <th>ID</th>
+                                <th>Type</th>
                                 <th>Client</th>
                                 <th>Vehicle</th>
                                 <th>Service</th>
@@ -126,8 +137,15 @@ $appointments = $pdo->query("
                         </thead>
                         <tbody>
                             <?php foreach ($appointments as $row): ?>
-                            <tr data-status="<?= htmlspecialchars($row['status']) ?>">
+                            <tr data-status="<?= htmlspecialchars($row['status']) ?>" data-type="<?= htmlspecialchars($row['appointment_type']) ?>">
                                 <td><?= htmlspecialchars($row['appointment_id']) ?></td>
+                                <td>
+                                    <?php if ($row['appointment_type'] === 'Walk-In'): ?>
+                                        <span class="badge" style="background:#e67e22;color:#fff;font-size:11px;"><i class="fas fa-walking"></i> Walk-In</span>
+                                    <?php else: ?>
+                                        <span class="badge" style="background:#3498db;color:#fff;font-size:11px;"><i class="fas fa-globe"></i> Online</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td><?= htmlspecialchars($row['client_name'] ?? 'N/A') ?></td>
                                 <td><?= htmlspecialchars(($row['make'] ?? '') . ' ' . ($row['model'] ?? '') . ' - ' . ($row['plate_number'] ?? 'N/A')) ?></td>
                                 <td><?= htmlspecialchars($row['service_name'] ?? 'N/A') ?></td>
@@ -207,12 +225,15 @@ function searchTable() {
     if (!table) return;
     var rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     var statusFilter = document.getElementById('statusFilter').value;
+    var typeFilter = document.getElementById('typeFilter').value;
     for (var i = 0; i < rows.length; i++) {
         var text = rows[i].textContent.toLowerCase();
         var rowStatus = rows[i].getAttribute('data-status');
+        var rowType = rows[i].getAttribute('data-type');
         var matchesSearch = text.indexOf(input) > -1;
         var matchesStatus = !statusFilter || rowStatus === statusFilter;
-        rows[i].style.display = (matchesSearch && matchesStatus) ? '' : 'none';
+        var matchesType = !typeFilter || rowType === typeFilter;
+        rows[i].style.display = (matchesSearch && matchesStatus && matchesType) ? '' : 'none';
     }
 }
 

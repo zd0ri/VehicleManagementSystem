@@ -18,10 +18,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $next_pos = (int)$pdo->query("SELECT COALESCE(MAX(position), 0) + 1 FROM queue WHERE status IN ('Waiting','Serving')")->fetchColumn();
             $stmt = $pdo->prepare("INSERT INTO queue (vehicle_id, client_id, position, status) VALUES (?, ?, ?, 'Waiting')");
             $stmt->execute([$_POST['vehicle_id'], $_POST['client_id'], $next_pos]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Added vehicle to queue', 'queue', $new_id);
             $success = 'Vehicle added to queue successfully.';
         }
         if ($action === 'update_status') {
             $pdo->prepare("UPDATE queue SET status = ? WHERE queue_id = ?")->execute([$_POST['status'], $_POST['queue_id']]);
+            logAudit($pdo, 'Updated queue status to ' . $_POST['status'], 'queue', $_POST['queue_id']);
             $success = 'Status updated successfully.';
         }
         if ($action === 'delete') {
@@ -32,6 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($del_pos) {
                 $pdo->exec("UPDATE queue SET position = position - 1 WHERE position > $del_pos ORDER BY position ASC");
             }
+            logAudit($pdo, 'Deleted queue entry', 'queue', $_POST['queue_id']);
             $success = 'Queue entry deleted successfully.';
         }
         if ($action === 'notify_turn') {
@@ -71,6 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 }
 
+                logAudit($pdo, 'Notified client for queue turn', 'queue', $queue_id);
                 $success = 'Client "' . htmlspecialchars($qe['client_name']) . '" has been notified that it\'s their turn!';
             } else {
                 $error = 'Could not find client information for this queue entry.';
@@ -90,6 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $pdo->prepare("UPDATE queue SET position = ? WHERE queue_id = ?")->execute([$current['position'], $above_row['queue_id']]);
                 }
             }
+            logAudit($pdo, 'Moved queue position up', 'queue', $_POST['queue_id']);
             $success = 'Queue position moved up.';
         }
         if ($action === 'move_down') {
@@ -107,6 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $pdo->prepare("UPDATE queue SET position = ? WHERE queue_id = ?")->execute([$current['position'], $below_row['queue_id']]);
                 }
             }
+            logAudit($pdo, 'Moved queue position down', 'queue', $_POST['queue_id']);
             $success = 'Queue position moved down.';
         }
     } catch (Exception $e) {
@@ -114,10 +121,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-$queue = $pdo->query("SELECT q.*, c.full_name AS client_name, v.plate_number, v.make, v.model 
+$queue = $pdo->query("SELECT q.*, c.full_name AS client_name, v.plate_number, v.make, v.model,
+    COALESCE(ap.appointment_type, 'Online') AS appointment_type
     FROM queue q 
     LEFT JOIN clients c ON q.client_id = c.client_id 
-    LEFT JOIN vehicles v ON q.vehicle_id = v.vehicle_id 
+    LEFT JOIN vehicles v ON q.vehicle_id = v.vehicle_id
+    LEFT JOIN appointments ap ON ap.vehicle_id = q.vehicle_id AND ap.client_id = q.client_id AND ap.appointment_id = (
+        SELECT MAX(a2.appointment_id) FROM appointments a2 WHERE a2.vehicle_id = q.vehicle_id AND a2.client_id = q.client_id
+    )
     ORDER BY q.position ASC")->fetchAll();
 
 $clients = $pdo->query("SELECT client_id, full_name FROM clients ORDER BY full_name")->fetchAll();
@@ -173,15 +184,27 @@ foreach ($queue as $q) {
                         <option value="Done">Done</option>
                         <option value="Cancelled">Cancelled</option>
                     </select>
+                    <select id="typeFilter" onchange="searchTable()" class="form-control" style="width:auto;min-width:150px;">
+                        <option value="">All Types</option>
+                        <option value="Online">Online Booking</option>
+                        <option value="Walk-In">Walk-In</option>
+                    </select>
                 </div>
                 <?php if (count($queue) > 0): ?>
                 <div class="table-responsive">
                     <table class="admin-table" id="queueTable">
-                        <thead><tr><th>Position</th><th>Client</th><th>Vehicle</th><th>Status</th><th>Added At</th><th>Actions</th></tr></thead>
+                        <thead><tr><th>Position</th><th>Type</th><th>Client</th><th>Vehicle</th><th>Status</th><th>Added At</th><th>Actions</th></tr></thead>
                         <tbody>
                         <?php foreach ($queue as $index => $row): ?>
-                        <tr data-status="<?= htmlspecialchars($row['status']) ?>">
+                        <tr data-status="<?= htmlspecialchars($row['status']) ?>" data-type="<?= htmlspecialchars($row['appointment_type']) ?>">
                             <td><strong>#<?= $row['position'] ?></strong></td>
+                            <td>
+                                <?php if ($row['appointment_type'] === 'Walk-In'): ?>
+                                    <span class="badge" style="background:#e67e22;color:#fff;font-size:11px;"><i class="fas fa-walking"></i> Walk-In</span>
+                                <?php else: ?>
+                                    <span class="badge" style="background:#3498db;color:#fff;font-size:11px;"><i class="fas fa-globe"></i> Online</span>
+                                <?php endif; ?>
+                            </td>
                             <td><?= htmlspecialchars($row['client_name'] ?? 'N/A') ?></td>
                             <td><?= htmlspecialchars(($row['make'] ?? '') . ' ' . ($row['model'] ?? '')) ?><?php if (!empty($row['plate_number'])): ?> - <strong><?= htmlspecialchars($row['plate_number']) ?></strong><?php endif; ?></td>
                             <td>
@@ -235,12 +258,14 @@ function closeModal(id){document.getElementById(id).classList.remove('active');}
 function searchTable(){
     var q=document.getElementById('searchInput').value.toLowerCase();
     var sf=document.getElementById('statusFilter').value;
+    var tf=document.getElementById('typeFilter').value;
     var t=document.getElementById('queueTable');if(!t)return;
     var rows=t.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for(var i=0;i<rows.length;i++){
         var text=rows[i].textContent.toLowerCase();
         var rs=rows[i].getAttribute('data-status');
-        rows[i].style.display=(text.indexOf(q)>-1&&(!sf||rs===sf))?'':'none';
+        var rt=rows[i].getAttribute('data-type');
+        rows[i].style.display=(text.indexOf(q)>-1&&(!sf||rs===sf)&&(!tf||rt===tf))?'':'none';
     }
 }
 function filterVehicles(){

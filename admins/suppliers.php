@@ -27,6 +27,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 trim($_POST['address']) ?: null,
                 $_POST['status'] ?? 'active'
             ]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created supplier', 'suppliers', $new_id);
             $success = 'Supplier added successfully.';
         } catch (Exception $e) {
             $error = 'Failed to add supplier: ' . $e->getMessage();
@@ -45,6 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $_POST['status'],
                 (int)$_POST['supplier_id']
             ]);
+            logAudit($pdo, 'Updated supplier', 'suppliers', (int)$_POST['supplier_id']);
             $success = 'Supplier updated successfully.';
         } catch (Exception $e) {
             $error = 'Failed to update supplier: ' . $e->getMessage();
@@ -62,9 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ((int)$inUse->fetchColumn() > 0 || (int)$poUse->fetchColumn() > 0) {
                 // Deactivate instead of delete
                 $pdo->prepare("UPDATE suppliers SET status = 'inactive' WHERE supplier_id = ?")->execute([(int)$_POST['supplier_id']]);
+                logAudit($pdo, 'Deactivated supplier (has linked items)', 'suppliers', (int)$_POST['supplier_id']);
                 $success = 'Supplier has linked items/orders and was deactivated instead of deleted.';
             } else {
                 $pdo->prepare("DELETE FROM suppliers WHERE supplier_id = ?")->execute([(int)$_POST['supplier_id']]);
+                logAudit($pdo, 'Deleted supplier', 'suppliers', (int)$_POST['supplier_id']);
                 $success = 'Supplier deleted successfully.';
             }
         } catch (Exception $e) {

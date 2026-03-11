@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         if ($action === 'delete') {
             $pdo->prepare("DELETE FROM ratings WHERE rating_id = ?")->execute([$_POST['rating_id']]);
+            logAudit($pdo, 'Deleted rating', 'ratings', $_POST['rating_id']);
             $success = 'Rating deleted successfully.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }

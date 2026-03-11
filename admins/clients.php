@@ -17,15 +17,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($action === 'add') {
             $stmt = $pdo->prepare("INSERT INTO clients (full_name, phone, email, address) VALUES (?, ?, ?, ?)");
             $stmt->execute([$_POST['full_name'], $_POST['phone'], $_POST['email'], $_POST['address']]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created client', 'clients', $new_id);
             $success = 'Client added successfully.';
         }
         if ($action === 'edit') {
             $stmt = $pdo->prepare("UPDATE clients SET full_name = ?, phone = ?, email = ?, address = ? WHERE client_id = ?");
             $stmt->execute([$_POST['full_name'], $_POST['phone'], $_POST['email'], $_POST['address'], $_POST['client_id']]);
+            logAudit($pdo, 'Updated client', 'clients', $_POST['client_id']);
             $success = 'Client updated successfully.';
         }
         if ($action === 'delete') {
             $pdo->prepare("DELETE FROM clients WHERE client_id = ?")->execute([$_POST['client_id']]);
+            logAudit($pdo, 'Deleted client', 'clients', $_POST['client_id']);
             $success = 'Client deleted successfully.';
         }
     } catch (Exception $e) {

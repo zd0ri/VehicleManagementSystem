@@ -17,15 +17,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($action === 'add') {
             $stmt = $pdo->prepare("INSERT INTO services (service_name, description, base_price, estimated_duration) VALUES (?, ?, ?, ?)");
             $stmt->execute([$_POST['service_name'], $_POST['description'], $_POST['base_price'], $_POST['estimated_duration'] ?: null]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created service', 'services', $new_id);
             $success = 'Service added successfully.';
         }
         if ($action === 'edit') {
             $stmt = $pdo->prepare("UPDATE services SET service_name = ?, description = ?, base_price = ?, estimated_duration = ? WHERE service_id = ?");
             $stmt->execute([$_POST['service_name'], $_POST['description'], $_POST['base_price'], $_POST['estimated_duration'] ?: null, $_POST['service_id']]);
+            logAudit($pdo, 'Updated service', 'services', $_POST['service_id']);
             $success = 'Service updated successfully.';
         }
         if ($action === 'delete') {
             $pdo->prepare("DELETE FROM services WHERE service_id = ?")->execute([$_POST['service_id']]);
+            logAudit($pdo, 'Deleted service', 'services', $_POST['service_id']);
             $success = 'Service deleted successfully.';
         }
     } catch (Exception $e) {

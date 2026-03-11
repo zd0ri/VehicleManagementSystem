@@ -54,6 +54,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $supplierName,
                     $supplierId
                 ]);
+                $new_id = $pdo->lastInsertId();
+                logAudit($pdo, 'Created inventory item', 'inventory', $new_id);
                 $success = 'Item added successfully.';
             }
         } catch (Exception $e) {
@@ -104,6 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $supplierId,
                     (int)$_POST['item_id']
                 ]);
+                logAudit($pdo, 'Updated inventory item', 'inventory', (int)$_POST['item_id']);
                 $success = 'Item updated successfully.';
             }
         } catch (Exception $e) {
@@ -124,6 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $stmt = $pdo->prepare("DELETE FROM inventory WHERE item_id = ?");
             $stmt->execute([(int)$_POST['item_id']]);
+            logAudit($pdo, 'Deleted inventory item', 'inventory', (int)$_POST['item_id']);
             $success = 'Item deleted successfully.';
         } catch (Exception $e) {
             $error = 'Failed to delete item: ' . $e->getMessage();
@@ -139,6 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             } else {
                 $stmt = $pdo->prepare("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ?");
                 $stmt->execute([$qty, (int)$_POST['item_id']]);
+                logAudit($pdo, 'Restocked inventory item', 'inventory', (int)$_POST['item_id']);
                 $success = 'Item restocked successfully.';
             }
         } catch (Exception $e) {

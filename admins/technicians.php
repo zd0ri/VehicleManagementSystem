@@ -18,6 +18,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $password_hash = password_hash($_POST['password'], PASSWORD_DEFAULT);
             $stmt = $pdo->prepare("INSERT INTO users (full_name, email, password_hash, role, status) VALUES (?, ?, ?, 'technician', ?)");
             $stmt->execute([$_POST['full_name'], $_POST['email'], $password_hash, $_POST['status']]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created technician', 'users', $new_id);
             $success = 'Technician added successfully.';
         }
         if ($action === 'edit') {
@@ -29,10 +31,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt = $pdo->prepare("UPDATE users SET full_name = ?, email = ?, status = ? WHERE user_id = ? AND role = 'technician'");
                 $stmt->execute([$_POST['full_name'], $_POST['email'], $_POST['status'], $_POST['user_id']]);
             }
+            logAudit($pdo, 'Updated technician', 'users', $_POST['user_id']);
             $success = 'Technician updated successfully.';
         }
         if ($action === 'delete') {
             $pdo->prepare("DELETE FROM users WHERE user_id = ? AND role = 'technician'")->execute([$_POST['user_id']]);
+            logAudit($pdo, 'Deleted technician', 'users', $_POST['user_id']);
             $success = 'Technician deleted successfully.';
         }
     } catch (Exception $e) {

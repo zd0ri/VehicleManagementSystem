@@ -4,6 +4,18 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') { header('Loc
 $page_title = 'Audit Logs'; $current_page = 'audit_logs';
 require_once __DIR__ . '/../includes/db.php';
 
+// AJAX endpoint for real-time polling
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'poll') {
+    header('Content-Type: application/json');
+    $last_id = (int)($_GET['last_id'] ?? 0);
+    $stmt = $pdo->prepare("SELECT al.*, u.full_name AS user_name FROM audit_logs al LEFT JOIN users u ON al.user_id = u.user_id WHERE al.log_id > ? ORDER BY al.log_id DESC LIMIT 50");
+    $stmt->execute([$last_id]);
+    $new_logs = $stmt->fetchAll();
+    $count = (int)$pdo->query("SELECT COUNT(*) FROM audit_logs")->fetchColumn();
+    echo json_encode(['logs' => $new_logs, 'total' => $count]);
+    exit;
+}
+
 $filter_table = $_GET['table'] ?? '';
 $filter_action = $_GET['action_type'] ?? '';
 $search = $_GET['search'] ?? '';
@@ -37,7 +49,11 @@ $actions = $pdo->query("SELECT DISTINCT action FROM audit_logs ORDER BY action A
         <?php include __DIR__ . '/includes/topbar.php'; ?>
         <div class="admin-content">
             <div class="page-header"><h2><i class="fas fa-clipboard-list"></i> Audit Logs</h2>
-                <span class="badge badge-info"><?= count($logs) ?> records</span></div>
+                <div style="display:flex;align-items:center;gap:0.75rem;">
+                    <span class="badge badge-success" id="liveIndicator" style="display:flex;align-items:center;gap:5px;"><span style="width:8px;height:8px;background:#fff;border-radius:50%;display:inline-block;animation:pulse 1.5s infinite;"></span> LIVE</span>
+                    <span class="badge badge-info" id="totalCount"><?= count($logs) ?> records</span>
+                </div>
+            </div>
 
             <div class="admin-card">
                 <form method="GET" class="table-toolbar" style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;">
@@ -83,5 +99,65 @@ $actions = $pdo->query("SELECT DISTINCT action FROM audit_logs ORDER BY action A
     </main>
 </div>
 <script src="includes/admin.js"></script>
+<style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}} @keyframes fadeIn{from{opacity:0;background:#e8f5e9}to{opacity:1;background:transparent}}</style>
+<script>
+(function(){
+    let lastId = <?= !empty($logs) ? (int)$logs[0]['log_id'] : 0 ?>;
+    const tbody = document.querySelector('.admin-table tbody');
+    const totalBadge = document.getElementById('totalCount');
+    const noFilters = <?= json_encode(!$filter_table && !$filter_action && !$search) ?>;
+
+    function getBadgeClass(action) {
+        const a = action.toLowerCase();
+        if (a.includes('create') || a.includes('insert') || a.includes('add')) return 'badge-success';
+        if (a.includes('update') || a.includes('edit') || a.includes('restock') || a.includes('mark')) return 'badge-warning';
+        if (a.includes('delete') || a.includes('remove') || a.includes('deactivat')) return 'badge-danger';
+        return 'badge-info';
+    }
+
+    function formatDate(ts) {
+        const d = new Date(ts);
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        let h = d.getHours(), ampm = h >= 12 ? 'PM' : 'AM';
+        h = h % 12 || 12;
+        return months[d.getMonth()] + ' ' + String(d.getDate()).padStart(2,'0') + ', ' + d.getFullYear() + ' ' +
+               String(h).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0') + ' ' + ampm;
+    }
+
+    function poll() {
+        if (!noFilters) return; // Don't auto-refresh if filters are active
+        fetch('audit_logs.php?ajax=poll&last_id=' + lastId)
+            .then(r => r.json())
+            .then(data => {
+                if (data.logs && data.logs.length > 0) {
+                    // Remove empty state if present
+                    const emptyState = document.querySelector('.empty-state');
+                    if (emptyState) {
+                        emptyState.closest('.admin-card').innerHTML = '<div class="table-responsive"><table class="admin-table"><thead><tr><th>ID</th><th>User</th><th>Action</th><th>Table</th><th>Record ID</th><th>Timestamp</th></tr></thead><tbody></tbody></table></div>';
+                    }
+                    const tb = document.querySelector('.admin-table tbody');
+                    if (tb) {
+                        data.logs.forEach(l => {
+                            if (l.log_id > lastId) lastId = l.log_id;
+                            const tr = document.createElement('tr');
+                            tr.style.animation = 'fadeIn 1s ease';
+                            tr.innerHTML = '<td>' + l.log_id + '</td>' +
+                                '<td>' + (l.user_name || 'System') + '</td>' +
+                                '<td><span class="badge ' + getBadgeClass(l.action) + '">' + l.action + '</span></td>' +
+                                '<td><code style="font-size:0.85rem;background:var(--hover-bg);padding:2px 6px;border-radius:4px;">' + l.table_name + '</code></td>' +
+                                '<td>' + (l.record_id || '') + '</td>' +
+                                '<td>' + formatDate(l.timestamp) + '</td>';
+                            tb.insertBefore(tr, tb.firstChild);
+                        });
+                    }
+                }
+                if (data.total !== undefined) totalBadge.textContent = data.total + ' records';
+            })
+            .catch(() => {});
+    }
+
+    setInterval(poll, 5000);
+})();
+</script>
 </body>
 </html>

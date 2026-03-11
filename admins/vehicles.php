@@ -30,6 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $_POST['color'],
                 $_POST['status']
             ]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created vehicle', 'vehicles', $new_id);
             $success = 'Vehicle added successfully.';
         } catch (Exception $e) {
             $error = 'Failed to add vehicle: ' . $e->getMessage();
@@ -50,6 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $_POST['status'],
                 $_POST['vehicle_id']
             ]);
+            logAudit($pdo, 'Updated vehicle', 'vehicles', $_POST['vehicle_id']);
             $success = 'Vehicle updated successfully.';
         } catch (Exception $e) {
             $error = 'Failed to update vehicle: ' . $e->getMessage();
@@ -60,6 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         try {
             $stmt = $pdo->prepare("DELETE FROM vehicles WHERE vehicle_id = ?");
             $stmt->execute([$_POST['vehicle_id']]);
+            logAudit($pdo, 'Deleted vehicle', 'vehicles', $_POST['vehicle_id']);
             $success = 'Vehicle deleted successfully.';
         } catch (Exception $e) {
             $error = 'Failed to delete vehicle: ' . $e->getMessage();

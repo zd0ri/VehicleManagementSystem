@@ -34,6 +34,7 @@ CREATE TABLE `appointments` (
   `service_id` int(11) DEFAULT NULL,
   `appointment_date` datetime NOT NULL,
   `status` enum('Pending','Approved','Completed','Cancelled') DEFAULT 'Pending',
+  `appointment_type` enum('Online','Walk-In') DEFAULT 'Online',
   `notes` text DEFAULT NULL,
   `created_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
@@ -43,14 +44,14 @@ CREATE TABLE `appointments` (
 -- Dumping data for table `appointments`
 --
 
-INSERT INTO `appointments` (`appointment_id`, `client_id`, `vehicle_id`, `service_id`, `appointment_date`, `status`, `notes`, `created_by`, `created_at`) VALUES
-(1, 2, 1, NULL, '2026-03-06 09:00:00', 'Completed', NULL, 6, '2026-03-05 03:11:56'),
-(2, 2, 1, NULL, '2026-03-06 14:00:00', 'Completed', NULL, 6, '2026-03-05 03:13:21'),
-(3, 2, 1, NULL, '2026-03-06 09:00:00', 'Pending', NULL, 6, '2026-03-05 13:12:26'),
-(4, 2, 1, 6, '2026-03-08 09:00:00', 'Approved', NULL, 6, '2026-03-07 13:45:56'),
-(5, 2, 1, 2, '2026-03-08 10:00:00', 'Approved', NULL, 6, '2026-03-07 14:04:54'),
-(6, 2, 1, 1, '2026-03-09 12:00:00', 'Approved', NULL, 6, '2026-03-07 14:05:16'),
-(7, 2, 1, 4, '2026-03-09 16:00:00', 'Approved', NULL, 6, '2026-03-07 14:05:29');
+INSERT INTO `appointments` (`appointment_id`, `client_id`, `vehicle_id`, `service_id`, `appointment_date`, `status`, `appointment_type`, `notes`, `created_by`, `created_at`) VALUES
+(1, 2, 1, NULL, '2026-03-06 09:00:00', 'Completed', 'Online', NULL, 6, '2026-03-05 03:11:56'),
+(2, 2, 1, NULL, '2026-03-06 14:00:00', 'Completed', 'Online', NULL, 6, '2026-03-05 03:13:21'),
+(3, 2, 1, NULL, '2026-03-06 09:00:00', 'Pending', 'Online', NULL, 6, '2026-03-05 13:12:26'),
+(4, 2, 1, 6, '2026-03-08 09:00:00', 'Approved', 'Online', NULL, 6, '2026-03-07 13:45:56'),
+(5, 2, 1, 2, '2026-03-08 10:00:00', 'Approved', 'Online', NULL, 6, '2026-03-07 14:04:54'),
+(6, 2, 1, 1, '2026-03-09 12:00:00', 'Approved', 'Online', NULL, 6, '2026-03-07 14:05:16'),
+(7, 2, 1, 4, '2026-03-09 16:00:00', 'Approved', 'Online', NULL, 6, '2026-03-07 14:05:29');
 
 -- --------------------------------------------------------
 
@@ -222,7 +223,7 @@ CREATE TABLE `notifications` (
   `user_id` int(11) DEFAULT NULL,
   `title` varchar(200) NOT NULL,
   `message` text DEFAULT NULL,
-  `type` enum('info','success','warning','danger') DEFAULT 'info',
+  `type` enum('info','success','warning','danger','queue_turn','new_assignment','ewallet_payment') DEFAULT 'info',
   `is_read` tinyint(1) DEFAULT 0,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

@@ -46,6 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $pdo->prepare("UPDATE inventory SET supplier = ? WHERE item_id = ?")->execute([$supplierName, $item_id]);
                 }
 
+                logAudit($pdo, 'Created purchase order', 'purchase_orders', $po_id);
                 $pdo->commit();
                 $success = 'Purchase order #' . $po_id . ' completed! ' . $quantity . ' units added to inventory.';
             }

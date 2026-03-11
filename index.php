@@ -13,6 +13,10 @@ if (isset($_SESSION['client_id'])) {
 // Handle AJAX add-to-cart
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
     header('Content-Type: application/json');
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'technician'])) {
+        echo json_encode(['success' => false, 'message' => 'Shop actions are view-only for staff accounts.']);
+        exit;
+    }
     if (!isset($_SESSION['client_id'])) {
         echo json_encode(['success' => false, 'message' => 'Please login to add items to cart.', 'redirect' => 'users/login.php']);
         exit;
@@ -260,6 +264,16 @@ $catIcons = [
 
 // Logged-in state for JS
 $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
+$isCustomer = isset($_SESSION['role']) && $_SESSION['role'] === 'customer';
+$userRole = $_SESSION['role'] ?? 'guest';
+
+// Dashboard URL based on role
+$dashboardUrl = '#';
+if (isset($_SESSION['role'])) {
+    if ($_SESSION['role'] === 'customer') $dashboardUrl = 'users/dashboard.php';
+    elseif ($_SESSION['role'] === 'technician') $dashboardUrl = 'technicians/dashboard.php';
+    elseif ($_SESSION['role'] === 'admin') $dashboardUrl = 'admins/dashboard.php';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -285,6 +299,8 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
             <?php if (isset($_SESSION['user_id'])): ?>
                 <?php if ($_SESSION['role'] === 'admin'): ?>
                     <a href="admins/dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+                <?php elseif ($_SESSION['role'] === 'technician'): ?>
+                    <a href="technicians/dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
                 <?php endif; ?>
                 <?php if ($_SESSION['role'] === 'customer'): ?>
                     <a href="users/profile.php"><i class="fas fa-user-circle"></i> My Profile</a>
@@ -335,9 +351,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                         </ul>
                     </li>
                     <li><a href="#about"><i class="fas fa-info-circle"></i> About</a></li>
-                    <li><a href="#contact"><i class="fas fa-envelope"></i> Contact</a></li>
-                    <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'customer'): ?>
-                    <li><a href="users/dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="technicians.php"><i class="fas fa-users-cog"></i> Technicians</a></li>
+                    <?php if (isset($_SESSION['user_id'])): ?>
+                    <li><a href="<?= $dashboardUrl ?>"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                     <?php endif; ?>
                 </ul>
             </nav>
@@ -358,10 +374,12 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                         if ($nCount > 0): ?><span class="badge"><?= $nCount ?></span><?php endif; ?>
                 </a>
                 <?php endif; ?>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                 <a href="users/cart.php" class="header-icon" title="Cart">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="badge" id="cartBadge"><?= $cartCount ?></span>
                 </a>
+                <?php endif; ?>
             </div>
 
             <!-- Mobile Toggle -->
@@ -548,7 +566,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <small style="color:var(--text-muted);"><?= $prod['quantity'] ?> in stock</small>
                 </div>
                 <div class="product-actions">
+                    <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                     <button class="btn-add-cart" onclick="addToCart(<?= $prod['item_id'] ?>, null, this)"><i class="fas fa-shopping-cart"></i> Add to Cart</button>
+                    <?php endif; ?>
                     <button class="btn-quick-view" title="Quick View"><i class="fas fa-eye"></i></button>
                 </div>
             </div>
@@ -604,7 +624,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                                 <span class="count-label">Sec</span>
                             </div>
                         </div>
+                        <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                         <button class="btn btn-primary btn-lg" onclick="addToCart(<?= $dealProduct['item_id'] ?>, null, this)"><i class="fas fa-shopping-cart"></i> Add to Cart</button>
+                        <?php endif; ?>
                     </div>
                 </div>
                 <?php endif; ?>
@@ -657,9 +679,11 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <h3><?= htmlspecialchars($svc['service_name']) ?></h3>
                     <p><?= htmlspecialchars($svc['description'] ?? 'Professional service for your vehicle.') ?></p>
                     <div class="service-price">Starting at <strong>₱<?= number_format($svc['base_price'], 2) ?></strong><?= $duration ? " &middot; ~{$duration}" : '' ?></div>
+                    <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                     <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;">
                         <button class="btn btn-outline" onclick="bookService(<?= $svc['service_id'] ?>, '<?= htmlspecialchars($svc['service_name'], ENT_QUOTES) ?>')"><i class="fas fa-calendar-check"></i> Book Now</button>
                     </div>
+                    <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
             <?php else: ?>
@@ -669,42 +693,42 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                 <h3>Oil Change</h3>
                 <p>Regular oil changes using premium synthetic or conventional oils to keep your engine running smoothly.</p>
                 <div class="service-price">Starting at <strong>₱800</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <div class="service-card">
                 <div class="service-icon"><i class="fas fa-cogs"></i></div>
                 <h3>Engine Repair</h3>
                 <p>Complete engine diagnostics, tune-ups, and major repair services for all vehicle makes and models.</p>
                 <div class="service-price">Starting at <strong>₱2,500</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <div class="service-card">
                 <div class="service-icon"><i class="fas fa-compact-disc"></i></div>
                 <h3>Brake Service</h3>
                 <p>Brake inspection, pad replacement, rotor resurfacing, and complete brake system overhaul.</p>
                 <div class="service-price">Starting at <strong>₱1,500</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <div class="service-card">
                 <div class="service-icon"><i class="fas fa-circle-notch"></i></div>
                 <h3>Tire Service</h3>
                 <p>Tire mounting, balancing, rotation, alignment, and flat tire repair services available.</p>
                 <div class="service-price">Starting at <strong>₱500</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <div class="service-card">
                 <div class="service-icon"><i class="fas fa-car-battery"></i></div>
                 <h3>Battery Service</h3>
                 <p>Battery testing, charging, replacement, and electrical system diagnostics for reliable starts.</p>
                 <div class="service-price">Starting at <strong>₱300</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <div class="service-card">
                 <div class="service-icon"><i class="fas fa-spray-can"></i></div>
                 <h3>Car Detailing</h3>
                 <p>Interior and exterior detailing, paint correction, ceramic coating, and protective treatments.</p>
                 <div class="service-price">Starting at <strong>₱1,800</strong></div>
-                <a href="users/book_service.php" class="btn btn-outline">Book Now</a>
+                <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?><a href="users/book_service.php" class="btn btn-outline">Book Now</a><?php endif; ?>
             </div>
             <?php endif; ?>
         </div>
@@ -740,7 +764,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <div class="product-price"><span class="price-current">₱<?= number_format($prod['unit_price'], 2) ?></span></div>
                 </div>
                 <div class="product-actions">
+                    <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                     <button class="btn-add-cart" onclick="addToCart(<?= $prod['item_id'] ?>, null, this)"><i class="fas fa-shopping-cart"></i> Add to Cart</button>
+                    <?php endif; ?>
                     <button class="btn-quick-view" title="Quick View"><i class="fas fa-eye"></i></button>
                 </div>
             </div>
@@ -801,7 +827,9 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                     <div class="product-price"><span class="price-current">₱<?= number_format($prod['unit_price'], 2) ?></span></div>
                 </div>
                 <div class="product-actions">
+                    <?php if ($isCustomer || !isset($_SESSION['user_id'])): ?>
                     <button class="btn-add-cart" onclick="addToCart(<?= $prod['item_id'] ?>, null, this)"><i class="fas fa-shopping-cart"></i> Add to Cart</button>
+                    <?php endif; ?>
                     <button class="btn-quick-view" title="Quick View"><i class="fas fa-eye"></i></button>
                 </div>
             </div>
@@ -858,6 +886,20 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
 </section>
 
 <!-- ========== TESTIMONIALS ========== -->
+<?php
+// Fetch real customer reviews (ratings with comments)
+$reviewStmt = $pdo->query("
+    SELECT r.rating_value, r.comment, r.created_at,
+           c.full_name AS client_name,
+           v.make, v.model
+    FROM ratings r
+    JOIN clients c ON r.client_id = c.client_id
+    JOIN vehicles v ON r.vehicle_id = v.vehicle_id
+    WHERE r.comment IS NOT NULL AND r.comment != ''
+    ORDER BY r.created_at DESC
+");
+$customerReviews = $reviewStmt->fetchAll();
+?>
 <section class="section testimonials-section">
     <div class="container">
         <div class="section-header center">
@@ -867,116 +909,47 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
             </div>
         </div>
         <div class="testimonials-grid">
-            <div class="testimonial-card">
-                <div class="testimonial-stars">
-                    <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
-                </div>
-                <p>"Best auto parts shop in Taguig! Great prices on brake pads and the installation was quick and professional. Highly recommend!"</p>
-                <div class="testimonial-author">
-                    <div class="author-avatar"><i class="fas fa-user"></i></div>
-                    <div>
-                        <strong>Johnny Walker</strong>
-                        <span>Toyota Fortuner Owner</span>
+            <?php if (!empty($customerReviews)): ?>
+                <?php foreach ($customerReviews as $review): ?>
+                <div class="testimonial-card">
+                    <div class="testimonial-stars">
+                        <?php
+                        $val = (float)$review['rating_value'];
+                        for ($i = 1; $i <= 5; $i++):
+                            if ($i <= floor($val)): ?>
+                                <i class="fas fa-star"></i>
+                            <?php elseif ($i - $val <= 0.5 && $i - $val > 0): ?>
+                                <i class="fas fa-star-half-alt"></i>
+                            <?php else: ?>
+                                <i class="far fa-star"></i>
+                            <?php endif;
+                        endfor; ?>
                     </div>
-                </div>
-            </div>
-            <div class="testimonial-card">
-                <div class="testimonial-stars">
-                    <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star-half-alt"></i>
-                </div>
-                <p>"Had my engine serviced here and I'm very impressed with the quality of work. The mechanics really know what they're doing. Fair pricing too!"</p>
-                <div class="testimonial-author">
-                    <div class="author-avatar"><i class="fas fa-user"></i></div>
-                    <div>
-                        <strong>Maria Santos</strong>
-                        <span>Honda Civic Owner</span>
-                    </div>
-                </div>
-            </div>
-            <div class="testimonial-card">
-                <div class="testimonial-stars">
-                    <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
-                </div>
-                <p>"I always get my tires and wheels from VehiCare. The selection is great and shipping was fast. Plus their online support is excellent!"</p>
-                <div class="testimonial-author">
-                    <div class="author-avatar"><i class="fas fa-user"></i></div>
-                    <div>
-                        <strong>Carlos Reyes</strong>
-                        <span>Mitsubishi Montero Owner</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- ========== NEWSLETTER ========== -->
-<section class="newsletter-section">
-    <div class="container">
-        <div class="newsletter-content">
-            <div class="newsletter-text">
-                <h2>Subscribe to Our Newsletter</h2>
-                <p>Get the latest deals, new arrivals, and exclusive offers delivered to your inbox.</p>
-            </div>
-            <form class="newsletter-form">
-                <input type="email" placeholder="Enter your email address" required>
-                <button type="submit" class="btn btn-primary">SUBSCRIBE <i class="fas fa-paper-plane"></i></button>
-            </form>
-        </div>
-    </div>
-</section>
-
-<!-- ========== CONTACT SECTION ========== -->
-<section class="section contact-section" id="contact">
-    <div class="container">
-        <div class="section-header center">
-            <div class="section-title-wrapper">
-                <span class="section-flag">GET IN TOUCH</span>
-                <h2 class="section-title">CONTACT US</h2>
-            </div>
-        </div>
-        <div class="contact-layout">
-            <div class="contact-info-cards">
-                <div class="contact-card">
-                    <i class="fas fa-map-marker-alt"></i>
-                    <h4>Our Location</h4>
-                    <p>123 Auto Parts Ave, Taguig City<br>Metro Manila, Philippines</p>
-                </div>
-                <div class="contact-card">
-                    <i class="fas fa-phone-alt"></i>
-                    <h4>Phone Number</h4>
-                    <p>+63 912 345 6789<br>+63 2 8123 4567</p>
-                </div>
-                <div class="contact-card">
-                    <i class="fas fa-envelope"></i>
-                    <h4>Email Address</h4>
-                    <p>info@vehicare.ph<br>support@vehicare.ph</p>
-                </div>
-                <div class="contact-card">
-                    <i class="fas fa-clock"></i>
-                    <h4>Working Hours</h4>
-                    <p>Mon - Sat: 8:00 AM - 8:00 PM<br>Sun: 9:00 AM - 5:00 PM</p>
-                </div>
-            </div>
-            <div class="contact-form-wrapper">
-                <form class="contact-form">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <input type="text" placeholder="Your Name" required>
-                        </div>
-                        <div class="form-group">
-                            <input type="email" placeholder="Your Email" required>
+                    <p>"<?= htmlspecialchars($review['comment']) ?>"</p>
+                    <div class="testimonial-author">
+                        <div class="author-avatar"><i class="fas fa-user"></i></div>
+                        <div>
+                            <strong><?= htmlspecialchars($review['client_name']) ?></strong>
+                            <span><?= htmlspecialchars($review['make'] . ' ' . $review['model']) ?> Owner</span>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <input type="text" placeholder="Subject">
+                </div>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <div class="testimonial-card">
+                    <div class="testimonial-stars">
+                        <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
                     </div>
-                    <div class="form-group">
-                        <textarea rows="5" placeholder="Your Message" required></textarea>
+                    <p>"No customer reviews yet. Be the first to share your experience with VehiCare!"</p>
+                    <div class="testimonial-author">
+                        <div class="author-avatar"><i class="fas fa-user"></i></div>
+                        <div>
+                            <strong>VehiCare</strong>
+                            <span>Awaiting Reviews</span>
+                        </div>
                     </div>
-                    <button type="submit" class="btn btn-primary btn-lg">Send Message <i class="fas fa-paper-plane"></i></button>
-                </form>
-            </div>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
 </section>
@@ -1005,7 +978,7 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
                         <li><a href="#services">Services</a></li>
                         <li><a href="#shop">Shop</a></li>
                         <li><a href="#about">About Us</a></li>
-                        <li><a href="#contact">Contact</a></li>
+                        <li><a href="technicians.php">Technicians</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
@@ -1204,6 +1177,7 @@ $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
 <!-- ========== JAVASCRIPT ========== -->
 <script>
 const IS_LOGGED_IN = <?= $isLoggedIn ?>;
+const USER_ROLE = '<?= $userRole ?>';
 
 // ===== Mobile Nav Toggle =====
 document.getElementById('mobileToggle').addEventListener('click', function() {
@@ -1333,6 +1307,10 @@ document.querySelectorAll('a[href^="#"]').forEach(anchor => {
 
 // ===== Add to Cart (AJAX) =====
 function addToCart(itemId, serviceId, btn) {
+    if (USER_ROLE === 'admin' || USER_ROLE === 'technician') {
+        alert('Shop actions are view-only for staff accounts.');
+        return;
+    }
     const originalHTML = btn.innerHTML;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
     btn.disabled = true;
@@ -1404,6 +1382,10 @@ if (searchInput) {
 // BOOKING MODAL FUNCTIONS
 // ===========================
 function bookService(serviceId, serviceName) {
+    if (USER_ROLE === 'admin' || USER_ROLE === 'technician') {
+        alert('Shop actions are view-only for staff accounts.');
+        return;
+    }
     if (!IS_LOGGED_IN) {
         if (confirm('Please login to book a service.\nGo to login page?')) {
             window.location.href = 'users/login.php';
@@ -1648,7 +1630,7 @@ document.addEventListener('click', function(e) {
 
     // Cart button
     const cartBtn = document.getElementById('qvCartBtn');
-    if (itemId) {
+    if (itemId && USER_ROLE !== 'admin' && USER_ROLE !== 'technician') {
         cartBtn.onclick = function() { addToCart(parseInt(itemId), null, this); };
         cartBtn.style.display = '';
     } else {

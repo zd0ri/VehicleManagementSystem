@@ -21,20 +21,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("INSERT INTO payments (invoice_id, amount_paid, payment_method, reference_number) VALUES (?,?,?,?)");
             $stmt->execute([$_POST['invoice_id'], $_POST['amount_paid'], $_POST['payment_method'], $_POST['reference_number'] ?: null]);
             recalcInvoiceStatus($pdo, $_POST['invoice_id']);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created payment', 'payments', $new_id);
             $success = 'Payment recorded successfully.';
         } elseif ($action === 'edit') {
             $old = $pdo->prepare("SELECT invoice_id FROM payments WHERE payment_id = ?"); $old->execute([$_POST['payment_id']]); $old_inv = $old->fetchColumn();
             $pdo->prepare("UPDATE payments SET invoice_id=?, amount_paid=?, payment_method=?, reference_number=? WHERE payment_id=?")->execute([$_POST['invoice_id'], $_POST['amount_paid'], $_POST['payment_method'], $_POST['reference_number'] ?: null, $_POST['payment_id']]);
             recalcInvoiceStatus($pdo, $_POST['invoice_id']);
             if ($old_inv != $_POST['invoice_id']) recalcInvoiceStatus($pdo, $old_inv);
+            logAudit($pdo, 'Updated payment', 'payments', $_POST['payment_id']);
             $success = 'Payment updated.';
         } elseif ($action === 'delete') {
             $old = $pdo->prepare("SELECT invoice_id FROM payments WHERE payment_id = ?"); $old->execute([$_POST['payment_id']]); $old_inv = $old->fetchColumn();
             $pdo->prepare("DELETE FROM payments WHERE payment_id = ?")->execute([$_POST['payment_id']]);
             if ($old_inv) recalcInvoiceStatus($pdo, $old_inv);
+            logAudit($pdo, 'Deleted payment', 'payments', $_POST['payment_id']);
             $success = 'Payment deleted.';
         } elseif ($action === 'update_order_status') {
             $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?")->execute([$_POST['status'], $_POST['order_id']]);
+            logAudit($pdo, 'Updated order status to ' . $_POST['status'], 'orders', $_POST['order_id']);
             $success = 'Order status updated.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }

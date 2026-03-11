@@ -11,54 +11,20 @@ $client_id = $_SESSION['client_id'];
 $user_id = $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'];
 
-// ── Handle rating submission ──
-$rating_success = '';
+// ── Handle rating submission (redirect to ratings page) ──
+$rating_success = $_GET['rated'] ?? '';
 $rating_error = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'submit_rating') {
-    $assignment_id = (int)($_POST['assignment_id'] ?? 0);
-    $technician_id = (int)($_POST['technician_id'] ?? 0);
-    $rating_value = (int)($_POST['rating_value'] ?? 0);
-    $comment = trim($_POST['comment'] ?? '');
-
-    if (!$assignment_id || !$technician_id || $rating_value < 1 || $rating_value > 5) {
-        $rating_error = 'Please provide a valid rating (1-5 stars).';
-    } else {
-        // Check if already rated
-        $chk = $pdo->prepare("SELECT rating_id FROM ratings WHERE assignment_id = ? AND client_id = ?");
-        $chk->execute([$assignment_id, $client_id]);
-        if ($chk->fetch()) {
-            $rating_error = 'You have already rated this service.';
-        } else {
-            // Verify the assignment belongs to this client
-            $verify = $pdo->prepare("
-                SELECT a.assignment_id FROM assignments a
-                JOIN appointments ap ON a.appointment_id = ap.appointment_id
-                WHERE a.assignment_id = ? AND ap.client_id = ? AND a.status IN ('Done', 'Finished')
-            ");
-            $verify->execute([$assignment_id, $client_id]);
-            if (!$verify->fetch()) {
-                $rating_error = 'Invalid or incomplete service.';
-            } else {
-                $stmt = $pdo->prepare("INSERT INTO ratings (client_id, technician_id, assignment_id, rating_value, comment) VALUES (?, ?, ?, ?, ?)");
-                $stmt->execute([$client_id, $technician_id, $assignment_id, $rating_value, $comment]);
-
-                // Notify technician
-                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'New Rating Received', ?, 'rating')")
-                    ->execute([$technician_id, 'A client rated your service ' . $rating_value . '/5 stars.' . ($comment ? ' Comment: "' . mb_substr($comment, 0, 100) . '"' : '')]);
-
-                $rating_success = 'Thank you for your rating!';
-            }
-        }
-    }
-}
 
 // ── Fetch active services (appointments with assignments) ──
 $activeStmt = $pdo->prepare("
     SELECT ap.appointment_id, ap.appointment_date, ap.status AS appt_status, ap.service_id AS appt_service_id,
-           a.assignment_id, a.status AS assign_status, a.notes AS tech_notes,
+           a.assignment_id, a.status AS assign_status, a.notes AS tech_notes, a.start_time, a.end_time,
            s.service_name, s.base_price,
            v.plate_number, v.make, v.model,
-           u.full_name AS tech_name, u.user_id AS tech_user_id
+           u.full_name AS tech_name, u.user_id AS tech_user_id,
+           (SELECT ROUND(AVG(r2.rating_value),1) FROM ratings r2 WHERE r2.technician_id = u.user_id) AS tech_avg_rating,
+           (SELECT COUNT(*) FROM ratings r3 WHERE r3.technician_id = u.user_id) AS tech_total_ratings,
+           (SELECT COUNT(*) FROM assignments a2 WHERE a2.technician_id = u.user_id AND a2.status = 'Finished') AS tech_completed_jobs
     FROM appointments ap
     LEFT JOIN assignments a ON ap.appointment_id = a.appointment_id
     LEFT JOIN services s ON COALESCE(a.service_id, ap.service_id) = s.service_id
@@ -98,6 +64,11 @@ if (!empty($completedServices)) {
         }
     }
 }
+
+// Count unrated completed services
+$unratedServices = array_filter($completedServices, function($svc) use ($ratedAssignments) {
+    return !isset($ratedAssignments[$svc['assignment_id']]);
+});
 
 // ── Data for nav dropdowns (match index.php) ──
 $dbServices = $pdo->query("SELECT * FROM services ORDER BY service_name ASC")->fetchAll();
@@ -197,6 +168,31 @@ $cartCount = $cartStmt->fetchColumn();
         .dash-alert.da-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         @keyframes dashSlide { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
 
+        /* Unrated reminder banner */
+        .unrated-banner { background: linear-gradient(135deg, #fff8e1, #fff3cd); border: 1px solid #ffe082; border-radius: 12px; padding: 18px 24px; margin-bottom: 20px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: all 0.2s; }
+        .unrated-banner:hover { box-shadow: 0 4px 16px rgba(241,196,15,0.2); transform: translateY(-1px); }
+        .unrated-banner .ub-icon { width: 45px; height: 45px; border-radius: 50%; background: #f1c40f; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0; }
+        .unrated-banner .ub-text h4 { margin: 0 0 2px; color: #856404; font-size: 0.95rem; }
+        .unrated-banner .ub-text p { margin: 0; color: #997a00; font-size: 0.85rem; }
+        .unrated-banner .ub-arrow { margin-left: auto; color: #997a00; font-size: 1.1rem; }
+
+        /* Technician profile card in completed services */
+        .tech-profile-box { display: flex; align-items: center; gap: 18px; margin-top: 16px; padding: 18px; background: linear-gradient(135deg, #f8f9fa, #eef2f7); border-radius: 12px; border: 1px solid #e3e8ef; }
+        .tech-avatar { width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #e74c3c, #c0392b); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; font-weight: 700; font-family: 'Oswald', sans-serif; flex-shrink: 0; }
+        .tech-details { flex: 1; }
+        .tech-details h4 { margin: 0 0 4px; color: #2c3e50; font-size: 1.05rem; font-family: 'Oswald', sans-serif; }
+        .tech-details .tech-role { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+        .tech-stats-row { display: flex; gap: 16px; flex-wrap: wrap; }
+        .tech-stat-item { font-size: 0.82rem; color: #555; display: flex; align-items: center; gap: 4px; }
+        .tech-stat-item i { font-size: 0.75rem; }
+        .tech-stat-item .ts-val { font-weight: 700; color: #333; }
+        .tech-stat-item .star-color { color: #f1c40f; }
+
+        /* Highlight unrated card */
+        .svc-card.unrated-highlight { border-left-color: #f1c40f; box-shadow: 0 2px 12px rgba(241,196,15,0.15); }
+        .rate-prompt { background: linear-gradient(135deg, #fff8e1, #fffdf5); border: 1px solid #ffe082; border-radius: 10px; padding: 16px; margin-top: 12px; }
+        .rate-prompt > p { color: #856404; font-weight: 600; margin-bottom: 10px; }
+
         @media (max-width: 600px) {
             .svc-info { grid-template-columns: 1fr; }
             .dash-summary { grid-template-columns: 1fr; }
@@ -215,6 +211,7 @@ $cartCount = $cartStmt->fetchColumn();
         </div>
         <div class="top-bar-right">
             <a href="profile.php"><i class="fas fa-user-circle"></i> My Profile</a>
+            <a href="ratings.php"><i class="fas fa-star"></i> My Ratings</a>
             <a href="orders.php"><i class="fas fa-box"></i> My Orders</a>
             <a href="book_service.php"><i class="fas fa-calendar-check"></i> Book Service</a>
             <a href="logout.php"><i class="fas fa-sign-out-alt"></i> Logout (<?= htmlspecialchars($full_name) ?>)</a>
@@ -256,6 +253,7 @@ $cartCount = $cartStmt->fetchColumn();
                     </li>
                     <li><a href="../index.php#about"><i class="fas fa-info-circle"></i> About</a></li>
                     <li><a href="../index.php#contact"><i class="fas fa-envelope"></i> Contact</a></li>
+                    <li><a href="technicians.php"><i class="fas fa-users-cog"></i> Technicians</a></li>
                     <li><a href="dashboard.php" class="active"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 </ul>
             </nav>
@@ -275,6 +273,9 @@ $cartCount = $cartStmt->fetchColumn();
                 <a href="orders.php" class="header-icon" title="My Orders" style="margin-left: 8px;">
                     <i class="fas fa-receipt"></i>
                 </a>
+                <a href="invoices.php" class="header-icon" title="My Invoices">
+                    <i class="fas fa-file-invoice-dollar"></i>
+                </a>
             </div>
             <button class="mobile-toggle" id="mobileToggle">
                 <i class="fas fa-bars"></i>
@@ -291,8 +292,16 @@ $cartCount = $cartStmt->fetchColumn();
         <?php if ($rating_success): ?>
             <div class="dash-alert da-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($rating_success) ?></div>
         <?php endif; ?>
-        <?php if ($rating_error): ?>
-            <div class="dash-alert da-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($rating_error) ?></div>
+
+        <?php if (!empty($unratedServices)): ?>
+        <a href="ratings.php" class="unrated-banner" style="text-decoration:none;">
+            <div class="ub-icon"><i class="fas fa-star"></i></div>
+            <div class="ub-text">
+                <h4><i class="fas fa-bell"></i> You have <?= count($unratedServices) ?> completed service<?= count($unratedServices) > 1 ? 's' : '' ?> to rate!</h4>
+                <p>Your feedback helps our technicians improve. Click here to rate now.</p>
+            </div>
+            <div class="ub-arrow"><i class="fas fa-chevron-right"></i></div>
+        </a>
         <?php endif; ?>
 
         <!-- Summary Cards -->
@@ -318,6 +327,13 @@ $cartCount = $cartStmt->fetchColumn();
                     <p>Completed</p>
                 </div>
             </div>
+            <a href="ratings.php" class="dash-stat" style="text-decoration:none; cursor:pointer; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 16px rgba(241,196,15,0.2)';" onmouseout="this.style.transform=''; this.style.boxShadow='';">
+                <div class="ds-icon" style="background:#fff8e1; color:#f1c40f;"><i class="fas fa-star"></i></div>
+                <div>
+                    <h3><?= count($unratedServices) ?></h3>
+                    <p>To Rate</p>
+                </div>
+            </a>
         </div>
 
         <!-- Tabs -->
@@ -366,7 +382,7 @@ $cartCount = $cartStmt->fetchColumn();
                     </div>
                     <div class="svc-progress">
                         <?php $i = 0; foreach ($steps as $step => $state): ?>
-                            <?php if ($i > 0): ?><div class="prog-line <?= $state === 'p-reached' ? 'p-reached' : ($state === 'reached' ? 'p-reached' : '') ?>"></div><?php endif; ?>
+                            <?php if ($i > 0): ?><div class="prog-line <?= ($state === 'reached' || $state === 'current') ? 'p-reached' : '' ?>"></div><?php endif; ?>
                             <div class="prog-step <?= $state === 'reached' ? 'p-reached' : ($state === 'current' ? 'p-current' : '') ?>">
                                 <div class="prog-dot">
                                     <?php if ($state === 'reached'): ?><i class="fas fa-check"></i>
@@ -445,7 +461,7 @@ $cartCount = $cartStmt->fetchColumn();
             <?php else: ?>
                 <?php foreach ($completedServices as $svc): ?>
                 <?php $rated = $ratedAssignments[$svc['assignment_id']] ?? null; ?>
-                <div class="svc-card st-done">
+                <div class="svc-card st-done <?= !$rated ? 'unrated-highlight' : '' ?>">
                     <div class="svc-head">
                         <h3><i class="fas fa-wrench"></i> <?= htmlspecialchars($svc['service_name'] ?? 'Vehicle Service') ?></h3>
                         <span class="svc-tag t-done">
@@ -455,7 +471,6 @@ $cartCount = $cartStmt->fetchColumn();
                     <div class="svc-info">
                         <span><i class="fas fa-car"></i> <?= htmlspecialchars(($svc['make'] ?? '') . ' ' . ($svc['model'] ?? '') . ' - ' . ($svc['plate_number'] ?? '')) ?></span>
                         <span><i class="fas fa-calendar"></i> <?= date('M d, Y h:i A', strtotime($svc['appointment_date'])) ?></span>
-                        <span><i class="fas fa-user-cog"></i> Technician: <strong><?= htmlspecialchars($svc['tech_name'] ?? 'N/A') ?></strong></span>
                         <?php if ($svc['base_price']): ?>
                         <span><i class="fas fa-peso-sign"></i> ₱<?= number_format($svc['base_price'], 2) ?></span>
                         <?php endif; ?>
@@ -471,6 +486,29 @@ $cartCount = $cartStmt->fetchColumn();
                     </div>
                     <?php if ($svc['tech_notes']): ?>
                     <div class="svc-note"><i class="fas fa-sticky-note"></i> Technician Note: <?= htmlspecialchars($svc['tech_notes']) ?></div>
+                    <?php endif; ?>
+
+                    <!-- Technician Profile -->
+                    <?php if ($svc['tech_name']): ?>
+                    <a href="technicians.php?tech_id=<?= $svc['tech_user_id'] ?>" class="tech-profile-box" style="text-decoration:none; color:inherit; transition: box-shadow 0.2s, transform 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 16px rgba(0,0,0,0.1)';" onmouseout="this.style.transform=''; this.style.boxShadow='';">
+                        <div class="tech-avatar"><?= strtoupper(substr($svc['tech_name'], 0, 1)) ?></div>
+                        <div class="tech-details">
+                            <h4><?= htmlspecialchars($svc['tech_name']) ?></h4>
+                            <div class="tech-role"><i class="fas fa-id-badge"></i> Service Technician</div>
+                            <div class="tech-stats-row">
+                                <div class="tech-stat-item">
+                                    <i class="fas fa-star star-color"></i>
+                                    <span class="ts-val"><?= $svc['tech_avg_rating'] ? $svc['tech_avg_rating'] : 'N/A' ?></span>
+                                    <span>(<?= (int)$svc['tech_total_ratings'] ?> review<?= (int)$svc['tech_total_ratings'] !== 1 ? 's' : '' ?>)</span>
+                                </div>
+                                <div class="tech-stat-item">
+                                    <i class="fas fa-check-circle" style="color:#388e3c;"></i>
+                                    <span class="ts-val"><?= (int)$svc['tech_completed_jobs'] ?></span>
+                                    <span>jobs done</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
                     <?php endif; ?>
 
                     <!-- Rating Section -->
@@ -489,21 +527,10 @@ $cartCount = $cartStmt->fetchColumn();
                                 <div class="rated-comment">"<?= htmlspecialchars($rated['comment']) ?>"</div>
                             <?php endif; ?>
                         <?php else: ?>
-                            <p style="font-weight:600; margin-bottom:8px; color:#333;"><i class="fas fa-star" style="color:#f1c40f;"></i> Rate this service</p>
-                            <form method="POST">
-                                <input type="hidden" name="action" value="submit_rating">
-                                <input type="hidden" name="assignment_id" value="<?= $svc['assignment_id'] ?>">
-                                <input type="hidden" name="technician_id" value="<?= $svc['tech_user_id'] ?>">
-                                <div class="star-pick">
-                                    <?php for ($i = 5; $i >= 1; $i--): ?>
-                                    <input type="radio" name="rating_value" id="star<?= $svc['assignment_id'] ?>_<?= $i ?>" value="<?= $i ?>">
-                                    <label for="star<?= $svc['assignment_id'] ?>_<?= $i ?>"><i class="fas fa-star"></i></label>
-                                    <?php endfor; ?>
-                                </div>
-                                <textarea name="comment" rows="2" placeholder="Leave a comment about the service (optional)..." class="rate-comment"></textarea>
-                                <br>
-                                <button type="submit" class="btn-rate"><i class="fas fa-paper-plane"></i> Submit Rating</button>
-                            </form>
+                            <div class="rate-prompt">
+                                <p><i class="fas fa-star" style="color:#f1c40f;"></i> How was your experience with <?= htmlspecialchars($svc['tech_name'] ?? 'the technician') ?>?</p>
+                                <a href="ratings.php" class="btn-rate" style="text-decoration:none;"><i class="fas fa-star"></i> Rate Now</a>
+                            </div>
                         <?php endif; ?>
                     </div>
                 </div>

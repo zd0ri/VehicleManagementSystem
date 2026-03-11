@@ -14,19 +14,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $total_amount = round($subtotal + $tax_amount, 2);
             $stmt = $pdo->prepare("INSERT INTO invoices (client_id, vehicle_id, subtotal, tax_amount, total_amount, status) VALUES (?,?,?,?,?,?)");
             $stmt->execute([$_POST['client_id'], $_POST['vehicle_id'], $subtotal, $tax_amount, $total_amount, $_POST['status']]);
+            $new_id = $pdo->lastInsertId();
+            logAudit($pdo, 'Created invoice', 'invoices', $new_id);
             $success = 'Invoice created successfully.';
         } elseif ($action === 'edit') {
             $subtotal = floatval($_POST['subtotal']);
             $tax_amount = round($subtotal * 0.12, 2);
             $total_amount = round($subtotal + $tax_amount, 2);
             $pdo->prepare("UPDATE invoices SET client_id=?, vehicle_id=?, subtotal=?, tax_amount=?, total_amount=?, status=? WHERE invoice_id=?")->execute([$_POST['client_id'], $_POST['vehicle_id'], $subtotal, $tax_amount, $total_amount, $_POST['status'], $_POST['invoice_id']]);
+            logAudit($pdo, 'Updated invoice', 'invoices', $_POST['invoice_id']);
             $success = 'Invoice updated successfully.';
         } elseif ($action === 'delete') {
             $pdo->prepare("DELETE FROM invoice_items WHERE invoice_id = ?")->execute([$_POST['invoice_id']]);
             $pdo->prepare("DELETE FROM invoices WHERE invoice_id = ?")->execute([$_POST['invoice_id']]);
+            logAudit($pdo, 'Deleted invoice', 'invoices', $_POST['invoice_id']);
             $success = 'Invoice deleted successfully.';
         } elseif ($action === 'update_status') {
             $pdo->prepare("UPDATE invoices SET status=? WHERE invoice_id=?")->execute([$_POST['status'], $_POST['invoice_id']]);
+            logAudit($pdo, 'Updated invoice status to ' . $_POST['status'], 'invoices', $_POST['invoice_id']);
             $success = 'Invoice status updated.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }

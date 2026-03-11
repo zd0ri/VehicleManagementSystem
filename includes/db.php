@@ -11,3 +11,12 @@ try {
 } catch (PDOException $e) {
     die("Database connection failed: " . $e->getMessage());
 }
+
+/**
+ * Log an action to the audit_logs table.
+ */
+function logAudit($pdo, $action, $table_name, $record_id = null) {
+    $user_id = $_SESSION['user_id'] ?? null;
+    $stmt = $pdo->prepare("INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)");
+    $stmt->execute([$user_id, $action, $table_name, $record_id]);
+}

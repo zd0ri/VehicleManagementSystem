@@ -18,6 +18,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($new_status === 'Ongoing') {
                 $pdo->prepare("UPDATE assignments SET status = 'Ongoing', start_time = NOW() WHERE assignment_id = ? AND technician_id = ?")
                     ->execute([$assignment_id, $tid]);
+
+                // Notify the client that the service has started
+                $asgn_start = $pdo->prepare("
+                    SELECT a.*, v.client_id, s.service_name, c.full_name AS client_name, c.user_id AS client_user_id
+                    FROM assignments a
+                    LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
+                    LEFT JOIN services s ON a.service_id = s.service_id
+                    LEFT JOIN clients c ON v.client_id = c.client_id
+                    WHERE a.assignment_id = ? AND a.technician_id = ?
+                ");
+                $asgn_start->execute([$assignment_id, $tid]);
+                $start_data = $asgn_start->fetch();
+
+                if ($start_data && $start_data['client_user_id']) {
+                    $svc_name = $start_data['service_name'] ?? 'vehicle service';
+                    $tech_name = $_SESSION['full_name'] ?? 'Your technician';
+                    $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Service Started!', ?, 'service_started')")
+                        ->execute([$start_data['client_user_id'], 'Your ' . $svc_name . ' has been started by ' . $tech_name . '. We will notify you once it is completed.']);
+                }
+
                 $success = 'Service started! Timer is running.';
             } elseif ($new_status === 'Finished') {
                 $pdo->prepare("UPDATE assignments SET status = 'Finished', end_time = NOW() WHERE assignment_id = ? AND technician_id = ?")
@@ -141,11 +161,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $filter_status = $_GET['status'] ?? '';
 $sql = "SELECT a.*, s.service_name, s.estimated_duration, s.base_price,
         v.plate_number, v.make, v.model, v.year, v.color,
-        c.full_name AS client_name, c.phone AS client_phone, c.email AS client_email
+        c.full_name AS client_name, c.phone AS client_phone, c.email AS client_email,
+        COALESCE(ap.appointment_type, 'Online') AS appointment_type
         FROM assignments a
         LEFT JOIN services s ON a.service_id = s.service_id
         LEFT JOIN vehicles v ON a.vehicle_id = v.vehicle_id
         LEFT JOIN clients c ON v.client_id = c.client_id
+        LEFT JOIN appointments ap ON a.appointment_id = ap.appointment_id
         WHERE a.technician_id = ?";
 $params = [$tid];
 if ($filter_status) { $sql .= " AND a.status = ?"; $params[] = $filter_status; }
@@ -213,6 +235,11 @@ foreach ($all_parts->fetchAll() as $p) {
                         <h3>
                             <i class="fas fa-wrench"></i>
                             <?= htmlspecialchars($a['service_name'] ?? 'Service #' . $a['assignment_id']) ?>
+                            <?php if ($a['appointment_type'] === 'Walk-In'): ?>
+                                <span class="badge" style="background:#e67e22;color:#fff;font-size:11px;margin-left:8px;vertical-align:middle;"><i class="fas fa-walking"></i> Walk-In</span>
+                            <?php else: ?>
+                                <span class="badge" style="background:#3498db;color:#fff;font-size:11px;margin-left:8px;vertical-align:middle;"><i class="fas fa-globe"></i> Online</span>
+                            <?php endif; ?>
                         </h3>
                         <span class="badge badge-<?= strtolower($a['status']) ?>"><?= $a['status'] ?></span>
                     </div>
