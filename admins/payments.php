@@ -38,8 +38,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             logAudit($pdo, 'Deleted payment', 'payments', $_POST['payment_id']);
             $success = 'Payment deleted.';
         } elseif ($action === 'update_order_status') {
-            $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?")->execute([$_POST['status'], $_POST['order_id']]);
-            logAudit($pdo, 'Updated order status to ' . $_POST['status'], 'orders', $_POST['order_id']);
+            $new_status = $_POST['status'];
+            $order_id = (int) $_POST['order_id'];
+
+            $pdo->beginTransaction();
+
+            // If cancelling, restore inventory and notify customer
+            if ($new_status === 'Cancelled') {
+                // Check current status to avoid double-restoring
+                $curStmt = $pdo->prepare("SELECT status, client_id FROM orders WHERE order_id = ?");
+                $curStmt->execute([$order_id]);
+                $curOrder = $curStmt->fetch();
+
+                if ($curOrder && $curOrder['status'] !== 'Cancelled') {
+                    // Restore inventory quantities
+                    $itemsStmt = $pdo->prepare("SELECT item_id, quantity FROM order_items WHERE order_id = ? AND item_id IS NOT NULL");
+                    $itemsStmt->execute([$order_id]);
+                    $orderItems = $itemsStmt->fetchAll();
+                    foreach ($orderItems as $oi) {
+                        $pdo->prepare("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ?")->execute([$oi['quantity'], $oi['item_id']]);
+                    }
+
+                    // Notify customer
+                    $clientUser = $pdo->prepare("SELECT user_id FROM clients WHERE client_id = ?");
+                    $clientUser->execute([$curOrder['client_id']]);
+                    $cu = $clientUser->fetch();
+                    if ($cu) {
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Order Cancelled', ?, 'cancellation')")
+                            ->execute([$cu['user_id'], 'Your order #' . $order_id . ' has been cancelled by admin. If payment was made, a refund will be processed.']);
+                    }
+                }
+            }
+
+            $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?")->execute([$new_status, $order_id]);
+            logAudit($pdo, 'Updated order status to ' . $new_status, 'orders', $order_id);
+            $pdo->commit();
             $success = 'Order status updated.';
         }
     } catch (Exception $e) { $error = 'Error: ' . $e->getMessage(); }

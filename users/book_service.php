@@ -175,9 +175,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     // ── Cancel Appointment ──
     if ($action === 'cancel') {
         $appointment_id = (int) ($_POST['appointment_id'] ?? 0);
-        $stmt = $pdo->prepare("UPDATE appointments SET status = 'Cancelled' WHERE appointment_id = ? AND client_id = ? AND status = 'Pending'");
-        $stmt->execute([$appointment_id, $client_id]);
-        $success = 'Appointment cancelled.';
+
+        try {
+            $pdo->beginTransaction();
+
+            // Get appointment info before cancelling
+            $apptInfo = $pdo->prepare("SELECT a.vehicle_id, a.service_id, s.service_name
+                FROM appointments a
+                LEFT JOIN services s ON a.service_id = s.service_id
+                WHERE a.appointment_id = ? AND a.client_id = ? AND a.status = 'Pending'");
+            $apptInfo->execute([$appointment_id, $client_id]);
+            $apptData = $apptInfo->fetch();
+
+            if ($apptData) {
+                // Cancel the appointment
+                $pdo->prepare("UPDATE appointments SET status = 'Cancelled' WHERE appointment_id = ?")->execute([$appointment_id]);
+
+                // Cancel related assignments
+                $asgnStmt = $pdo->prepare("SELECT assignment_id, technician_id FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')");
+                $asgnStmt->execute([$appointment_id]);
+                $assignments = $asgnStmt->fetchAll();
+                if (!empty($assignments)) {
+                    $pdo->prepare("DELETE FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')")->execute([$appointment_id]);
+                    foreach ($assignments as $a) {
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Cancelled', ?, 'cancellation')")
+                            ->execute([$a['technician_id'], 'Appointment #' . $appointment_id . ' for ' . ($apptData['service_name'] ?? 'a service') . ' was cancelled by the customer.']);
+                    }
+                }
+
+                // Cancel related queue entry
+                $queueStmt = $pdo->prepare("SELECT queue_id, position FROM queue WHERE client_id = ? AND vehicle_id = ? AND status IN ('Waiting','Serving')");
+                $queueStmt->execute([$client_id, $apptData['vehicle_id']]);
+                $queueEntry = $queueStmt->fetch();
+                if ($queueEntry) {
+                    $pdo->prepare("UPDATE queue SET status = 'Cancelled' WHERE queue_id = ?")->execute([$queueEntry['queue_id']]);
+                    $pdo->prepare("UPDATE queue SET position = position - 1 WHERE position > ? AND status IN ('Waiting','Serving') ORDER BY position ASC")->execute([$queueEntry['position']]);
+                }
+
+                // Notify admins
+                $admins = $pdo->query("SELECT user_id FROM users WHERE role = 'admin' AND status = 'active'")->fetchAll();
+                foreach ($admins as $adm) {
+                    $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Cancelled by Customer', ?, 'cancellation')")
+                        ->execute([$adm['user_id'], $full_name . ' cancelled appointment #' . $appointment_id . ' for ' . ($apptData['service_name'] ?? 'a service') . '.']);
+                }
+
+                $pdo->commit();
+                $success = 'Appointment cancelled successfully.';
+            } else {
+                $pdo->rollBack();
+                $error = 'Appointment not found or cannot be cancelled.';
+            }
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $error = 'Failed to cancel appointment: ' . $e->getMessage();
+        }
     }
 }
 

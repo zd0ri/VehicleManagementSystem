@@ -18,14 +18,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($action === 'update_status') {
         try {
+            $new_status = $_POST['status'];
+            $appt_id = (int) $_POST['appointment_id'];
+
+            $pdo->beginTransaction();
+
             $stmt = $pdo->prepare("UPDATE appointments SET status = ? WHERE appointment_id = ?");
-            $stmt->execute([
-                $_POST['status'],
-                $_POST['appointment_id']
-            ]);
-            logAudit($pdo, 'Updated appointment status to ' . $_POST['status'], 'appointments', $_POST['appointment_id']);
+            $stmt->execute([$new_status, $appt_id]);
+
+            // Cascading logic when cancelling
+            if ($new_status === 'Cancelled') {
+                // Get appointment details for notifications
+                $apptInfo = $pdo->prepare("SELECT a.client_id, a.service_id, c.full_name AS client_name, s.service_name,
+                    cu.user_id AS client_user_id
+                    FROM appointments a
+                    LEFT JOIN clients c ON a.client_id = c.client_id
+                    LEFT JOIN services s ON a.service_id = s.service_id
+                    LEFT JOIN clients cu ON a.client_id = cu.client_id
+                    WHERE a.appointment_id = ?");
+                $apptInfo->execute([$appt_id]);
+                $apptData = $apptInfo->fetch();
+
+                // Cancel related assignments
+                $asgn = $pdo->prepare("SELECT assignment_id, technician_id FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')");
+                $asgn->execute([$appt_id]);
+                $assignments = $asgn->fetchAll();
+                if (!empty($assignments)) {
+                    $pdo->prepare("DELETE FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')")->execute([$appt_id]);
+                    // Notify each technician
+                    foreach ($assignments as $a) {
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Cancelled', ?, 'cancellation')")
+                            ->execute([$a['technician_id'], 'Appointment #' . $appt_id . ' for ' . ($apptData['service_name'] ?? 'a service') . ' has been cancelled by admin.']);
+                    }
+                }
+
+                // Cancel related queue entries
+                if ($apptData) {
+                    $queueDel = $pdo->prepare("SELECT queue_id, position FROM queue WHERE client_id = ? AND vehicle_id = (SELECT vehicle_id FROM appointments WHERE appointment_id = ?) AND status IN ('Waiting','Serving')");
+                    $queueDel->execute([$apptData['client_id'], $appt_id]);
+                    $queueEntry = $queueDel->fetch();
+                    if ($queueEntry) {
+                        $pdo->prepare("UPDATE queue SET status = 'Cancelled' WHERE queue_id = ?")->execute([$queueEntry['queue_id']]);
+                        $pdo->prepare("UPDATE queue SET position = position - 1 WHERE position > ? AND status IN ('Waiting','Serving') ORDER BY position ASC")->execute([$queueEntry['position']]);
+                    }
+
+                    // Notify customer
+                    $clientUser = $pdo->prepare("SELECT user_id FROM clients WHERE client_id = ?");
+                    $clientUser->execute([$apptData['client_id']]);
+                    $cu = $clientUser->fetch();
+                    if ($cu) {
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Appointment Cancelled', ?, 'cancellation')")
+                            ->execute([$cu['user_id'], 'Your appointment #' . $appt_id . ' for ' . ($apptData['service_name'] ?? 'a service') . ' has been cancelled by admin.']);
+                    }
+                }
+            }
+
+            logAudit($pdo, 'Updated appointment status to ' . $new_status, 'appointments', $appt_id);
+            $pdo->commit();
             $success = 'Appointment status updated successfully.';
         } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = 'Failed to update status: ' . $e->getMessage();
         }
     }

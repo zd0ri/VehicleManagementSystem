@@ -41,6 +41,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Update order status to Cancelled
         $updateStmt = $pdo->prepare("UPDATE orders SET status = 'Cancelled' WHERE order_id = ?");
         $updateStmt->execute([$order_id]);
+
+        // Notify admins about the cancellation
+        $admins = $pdo->query("SELECT user_id FROM users WHERE role = 'admin' AND status = 'active'")->fetchAll();
+        foreach ($admins as $adm) {
+            $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Order Cancelled by Customer', ?, 'cancellation')")
+                ->execute([$adm['user_id'], $full_name . ' cancelled order #' . $order_id . '.']);
+        }
     }
 
     header('Location: orders.php');

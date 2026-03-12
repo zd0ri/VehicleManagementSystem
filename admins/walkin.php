@@ -167,11 +167,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($action === 'update_status') {
         try {
+            $new_status = $_POST['status'];
+            $queue_id = (int) $_POST['queue_id'];
+
+            $pdo->beginTransaction();
+
             $stmt = $pdo->prepare("UPDATE queue SET status = ? WHERE queue_id = ?");
-            $stmt->execute([$_POST['status'], $_POST['queue_id']]);
-            logAudit($pdo, 'Updated walk-in queue status to ' . $_POST['status'], 'queue', $_POST['queue_id']);
+            $stmt->execute([$new_status, $queue_id]);
+
+            // Cascading logic when cancelling a walk-in
+            if ($new_status === 'Cancelled') {
+                // Get queue info
+                $qInfo = $pdo->prepare("SELECT q.client_id, q.vehicle_id, q.position FROM queue WHERE queue_id = ?");
+                $qInfo->execute([$queue_id]);
+                $qData = $qInfo->fetch();
+
+                if ($qData) {
+                    // Reorder queue positions
+                    $pdo->prepare("UPDATE queue SET position = position - 1 WHERE position > ? AND status IN ('Waiting','Serving') ORDER BY position ASC")->execute([$qData['position']]);
+
+                    // Cancel related appointment
+                    $apptStmt = $pdo->prepare("SELECT ap.appointment_id, ap.service_id, s.service_name
+                        FROM appointments ap
+                        LEFT JOIN services s ON ap.service_id = s.service_id
+                        WHERE ap.client_id = ? AND ap.vehicle_id = ? AND ap.appointment_type = 'Walk-In'
+                        AND ap.status IN ('Pending','Approved') AND DATE(ap.created_at) = CURDATE()
+                        LIMIT 1");
+                    $apptStmt->execute([$qData['client_id'], $qData['vehicle_id']]);
+                    $appt = $apptStmt->fetch();
+
+                    if ($appt) {
+                        $pdo->prepare("UPDATE appointments SET status = 'Cancelled' WHERE appointment_id = ?")->execute([$appt['appointment_id']]);
+
+                        // Cancel related assignments and notify technician
+                        $asgnStmt = $pdo->prepare("SELECT assignment_id, technician_id FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')");
+                        $asgnStmt->execute([$appt['appointment_id']]);
+                        $assignments = $asgnStmt->fetchAll();
+                        if (!empty($assignments)) {
+                            $pdo->prepare("DELETE FROM assignments WHERE appointment_id = ? AND status IN ('Assigned','Ongoing')")->execute([$appt['appointment_id']]);
+                            foreach ($assignments as $a) {
+                                $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Walk-In Cancelled', ?, 'cancellation')")
+                                    ->execute([$a['technician_id'], 'Walk-in appointment #' . $appt['appointment_id'] . ' for ' . ($appt['service_name'] ?? 'a service') . ' has been cancelled.']);
+                            }
+                        }
+                    }
+
+                    // Notify customer
+                    $clientUser = $pdo->prepare("SELECT user_id FROM clients WHERE client_id = ?");
+                    $clientUser->execute([$qData['client_id']]);
+                    $cu = $clientUser->fetch();
+                    if ($cu) {
+                        $svcName = $appt['service_name'] ?? 'your walk-in service';
+                        $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Walk-In Cancelled', ?, 'cancellation')")
+                            ->execute([$cu['user_id'], 'Your walk-in booking for ' . $svcName . ' has been cancelled by admin.']);
+                    }
+                }
+            }
+
+            logAudit($pdo, 'Updated walk-in queue status to ' . $new_status, 'queue', $queue_id);
+            $pdo->commit();
             $success = 'Queue status updated successfully.';
         } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = 'Failed to update status: ' . $e->getMessage();
         }
     }

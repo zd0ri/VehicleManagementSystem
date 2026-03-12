@@ -114,6 +114,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
     }
 
+    // ── Upload Profile Picture ──
+    if ($action === 'upload_picture') {
+        if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === UPLOAD_ERR_OK) {
+            $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+            $ext = strtolower(pathinfo($_FILES['profile_picture']['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, $allowed)) {
+                $error_msg = 'Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.';
+            } elseif ($_FILES['profile_picture']['size'] > 5 * 1024 * 1024) {
+                $error_msg = 'File is too large. Maximum size is 5MB.';
+            } else {
+                $filename = 'profile_' . $user_id . '_' . time() . '.' . $ext;
+                $dest = __DIR__ . '/../uploads/' . $filename;
+                if (move_uploaded_file($_FILES['profile_picture']['tmp_name'], $dest)) {
+                    // Delete old picture if it exists
+                    $oldPic = $pdo->prepare("SELECT profile_picture FROM users WHERE user_id = ?");
+                    $oldPic->execute([$user_id]);
+                    $oldFile = $oldPic->fetchColumn();
+                    if ($oldFile && file_exists(__DIR__ . '/../uploads/' . $oldFile)) {
+                        unlink(__DIR__ . '/../uploads/' . $oldFile);
+                    }
+                    $pdo->prepare("UPDATE users SET profile_picture = ? WHERE user_id = ?")->execute([$filename, $user_id]);
+                    $success_msg = 'Profile picture updated successfully.';
+                } else {
+                    $error_msg = 'Failed to upload file. Please try again.';
+                }
+            }
+        } else {
+            $error_msg = 'Please select an image file to upload.';
+        }
+    }
+
+    // ── Remove Profile Picture ──
+    if ($action === 'remove_picture') {
+        $oldPic = $pdo->prepare("SELECT profile_picture FROM users WHERE user_id = ?");
+        $oldPic->execute([$user_id]);
+        $oldFile = $oldPic->fetchColumn();
+        if ($oldFile && file_exists(__DIR__ . '/../uploads/' . $oldFile)) {
+            unlink(__DIR__ . '/../uploads/' . $oldFile);
+        }
+        $pdo->prepare("UPDATE users SET profile_picture = NULL WHERE user_id = ?")->execute([$user_id]);
+        $success_msg = 'Profile picture removed.';
+    }
+
     // ── Delete Vehicle ──
     if ($action === 'delete_vehicle') {
         $vid = (int) ($_POST['vehicle_id'] ?? 0);
@@ -123,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // ── Fetch profile data ──
-$stmt = $pdo->prepare("SELECT u.full_name, u.email, u.created_at, c.phone, c.address
+$stmt = $pdo->prepare("SELECT u.full_name, u.email, u.created_at, u.profile_picture, c.phone, c.address
                         FROM users u JOIN clients c ON u.user_id = c.user_id
                         WHERE u.user_id = ?");
 $stmt->execute([$user_id]);
@@ -157,6 +200,7 @@ $activeTab = 'profile';
 if (isset($_POST['action'])) {
     if ($_POST['action'] === 'change_password') $activeTab = 'password';
     if (in_array($_POST['action'], ['add_vehicle', 'edit_vehicle', 'delete_vehicle'])) $activeTab = 'vehicles';
+    if (in_array($_POST['action'], ['update_profile', 'upload_picture', 'remove_picture'])) $activeTab = 'profile';
 }
 if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehicles'])) {
     $activeTab = $_GET['tab'];
@@ -216,8 +260,8 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
             position: relative;
         }
         .profile-avatar {
-            width: 100px;
-            height: 100px;
+            width: 110px;
+            height: 110px;
             border-radius: 50%;
             background: rgba(255,255,255,0.2);
             display: flex;
@@ -225,10 +269,65 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
             justify-content: center;
             margin: 0 auto 15px;
             border: 4px solid rgba(255,255,255,0.4);
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
         }
         .profile-avatar i {
             font-size: 48px;
             color: #fff;
+        }
+        .profile-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 50%;
+        }
+        .avatar-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            text-align: center;
+            padding: 6px 0;
+            font-size: 11px;
+            font-weight: 600;
+            opacity: 0;
+            transition: opacity 0.3s;
+            cursor: pointer;
+        }
+        .profile-avatar:hover .avatar-overlay {
+            opacity: 1;
+        }
+        .avatar-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        .avatar-actions .btn-avatar {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.4);
+            padding: 5px 14px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: 'Roboto', sans-serif;
+        }
+        .avatar-actions .btn-avatar:hover {
+            background: rgba(255,255,255,0.35);
+        }
+        .avatar-actions .btn-avatar-danger {
+            background: rgba(231,76,60,0.4);
+            border-color: rgba(231,76,60,0.6);
+        }
+        .avatar-actions .btn-avatar-danger:hover {
+            background: rgba(231,76,60,0.7);
         }
         .profile-card-header h3 {
             color: #fff;
@@ -731,11 +830,33 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
             <!-- ── LEFT: Profile Card ── -->
             <div class="profile-card">
                 <div class="profile-card-header">
-                    <div class="profile-avatar">
-                        <i class="fas fa-user"></i>
+                    <div class="profile-avatar" onclick="document.getElementById('profilePicInput').click()">
+                        <?php if (!empty($profile['profile_picture']) && file_exists(__DIR__ . '/../uploads/' . $profile['profile_picture'])): ?>
+                            <img src="../uploads/<?= htmlspecialchars($profile['profile_picture']) ?>" alt="Profile Picture">
+                        <?php else: ?>
+                            <i class="fas fa-user"></i>
+                        <?php endif; ?>
+                        <div class="avatar-overlay"><i class="fas fa-camera"></i> Change</div>
                     </div>
                     <h3><?= htmlspecialchars($profile['full_name']) ?></h3>
                     <p>Customer Account</p>
+                    <div class="avatar-actions">
+                        <form method="POST" action="profile.php" enctype="multipart/form-data" id="avatarForm" style="display:none;">
+                            <input type="hidden" name="action" value="upload_picture">
+                            <input type="file" id="profilePicInput" name="profile_picture" accept="image/jpeg,image/png,image/gif,image/webp" onchange="document.getElementById('avatarForm').submit()">
+                        </form>
+                        <button type="button" class="btn-avatar" onclick="document.getElementById('profilePicInput').click()">
+                            <i class="fas fa-camera"></i> <?= !empty($profile['profile_picture']) ? 'Change' : 'Upload' ?>
+                        </button>
+                        <?php if (!empty($profile['profile_picture'])): ?>
+                            <form method="POST" action="profile.php" style="display:inline;" onsubmit="return confirm('Remove your profile picture?')">
+                                <input type="hidden" name="action" value="remove_picture">
+                                <button type="submit" class="btn-avatar btn-avatar-danger">
+                                    <i class="fas fa-trash-alt"></i> Remove
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <div class="profile-card-body">
                     <div class="profile-info-row">
