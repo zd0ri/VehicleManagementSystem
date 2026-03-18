@@ -60,6 +60,15 @@ $recent_queue = $pdo->query("
     <link rel="stylesheet" href="../includes/style/admin.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body.admin-body { background: #f4f6fb; color: #2c3e50; }
+        .admin-main { background: #f4f6fb; }
+        .admin-content { background: transparent; }
+        .admin-card, .stat-card, .admin-table { background: #ffffff; color: #2c3e50; }
+        .admin-card { border: 1px solid #e6ebf2; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); }
+        .admin-table thead th { color: #607080; }
+        .admin-table tbody td { color: #2c3e50; }
+    </style>
 </head>
 <body class="admin-body">
 

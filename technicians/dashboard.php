@@ -15,6 +15,13 @@ $assigned = $pdo->prepare("SELECT COUNT(*) FROM assignments WHERE technician_id 
 // Average rating
 $avg_stmt = $pdo->prepare("SELECT ROUND(AVG(r.rating_value),1) FROM ratings r WHERE r.technician_id = ?"); $avg_stmt->execute([$tid]); $avg_rating = $avg_stmt->fetchColumn() ?: 0;
 
+$incentive_rate = 0.00;
+if ($avg_rating >= 4.8) $incentive_rate = 0.20;
+elseif ($avg_rating >= 4.5) $incentive_rate = 0.15;
+elseif ($avg_rating >= 4.0) $incentive_rate = 0.10;
+elseif ($avg_rating >= 3.5) $incentive_rate = 0.05;
+$incentive_amount = $finished * 150 * $incentive_rate;
+
 // Recent assignments
 $recent = $pdo->prepare("SELECT a.*, s.service_name, v.plate_number, v.make, v.model, c.full_name AS client_name
     FROM assignments a
@@ -61,6 +68,14 @@ $completion_rate = $total_assignments > 0 ? round(($finished / $total_assignment
     <link rel="stylesheet" href="../includes/style/technician.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body.tech-body { background: #f4f6fb; color: #2c3e50; }
+        .tech-main { background: #f4f6fb; }
+        .tech-content { background: transparent; }
+        .tech-card, .stat-card { background: #ffffff; color: #2c3e50; border: 1px solid #e6ebf2; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); }
+        .assignment-title, .vehicle-name, .timeline-title, .stat-value { color: #2c3e50; }
+        .assignment-meta span, .vehicle-plate, .stat-label { color: #607080; }
+    </style>
 </head>
 <body class="tech-body">
 <div class="tech-layout">
@@ -110,6 +125,14 @@ $completion_rate = $total_assignments > 0 ? round(($finished / $total_assignment
                         <span class="stat-label">Pending</span>
                         <span class="stat-value"><?= $assigned ?></span>
                         <span class="stat-trend"><i class="fas fa-pause"></i> Waiting</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: rgba(241,196,15,0.15); color: #f1c40f;"><i class="fas fa-gift"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-label">Incentive (Est.)</span>
+                        <span class="stat-value">₱<?= number_format($incentive_amount, 2) ?></span>
+                        <span class="stat-trend"><i class="fas fa-star"></i> <?= number_format($avg_rating, 1) ?>/5 rating tier</span>
                     </div>
                 </div>
             </div>

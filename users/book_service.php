@@ -15,6 +15,56 @@ $full_name = $_SESSION['full_name'];
 $success = '';
 $error   = '';
 
+// Backward-compatible schema update for expertise-based assignments.
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('expertise', $cols, true)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN expertise TEXT NULL AFTER status");
+    }
+} catch (Exception $e) {
+    // Keep booking available even if migration cannot run.
+}
+
+function serviceNeedsExpertise(string $serviceName): array {
+    $n = strtolower($serviceName);
+    $map = [
+        'engine' => ['engine'],
+        'oil' => ['oil', 'lubrication', 'engine'],
+        'brake' => ['brake'],
+        'tire' => ['tire', 'wheel', 'alignment'],
+        'wheel' => ['wheel', 'tire', 'alignment'],
+        'battery' => ['battery', 'electrical'],
+        'electrical' => ['electrical', 'battery'],
+        'detail' => ['detail', 'detailing', 'body'],
+    ];
+    foreach ($map as $key => $skills) {
+        if (strpos($n, $key) !== false) {
+            return $skills;
+        }
+    }
+    return [];
+}
+
+function technicianMatchesService(string $serviceName, ?string $expertise): bool {
+    if (!$expertise) {
+        return false;
+    }
+    $e = strtolower($expertise);
+    if (strpos($e, 'general') !== false || strpos($e, 'all') !== false) {
+        return true;
+    }
+    $needs = serviceNeedsExpertise($serviceName);
+    if (empty($needs)) {
+        return true;
+    }
+    foreach ($needs as $skill) {
+        if (strpos($e, $skill) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ── POST handlers ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
@@ -68,9 +118,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 try {
                     $pdo->beginTransaction();
 
-                    // Find least busy available technician (with NO ongoing assignments)
+                    // Find least busy available technician with matching expertise.
                     $tech_stmt = $pdo->query("
-                        SELECT u.user_id, u.full_name,
+                        SELECT u.user_id, u.full_name, u.expertise,
                                COUNT(a.assignment_id) AS active_count,
                                SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
                         FROM users u
@@ -81,19 +131,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     ");
                     $all_techs = $tech_stmt->fetchAll();
 
+                    $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                    $svc->execute([$service_id]);
+                    $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+
+                    $matching_techs = array_values(array_filter($all_techs, function($t) use ($svc_name) {
+                        return technicianMatchesService($svc_name, $t['expertise'] ?? null);
+                    }));
+                    $pool = !empty($matching_techs) ? $matching_techs : $all_techs;
+
                     $free_tech = null;
                     $least_busy_tech = null;
-                    foreach ($all_techs as $t) {
+                    foreach ($pool as $t) {
                         if (!$least_busy_tech) $least_busy_tech = $t;
                         if ((int)$t['ongoing_count'] === 0) {
                             $free_tech = $t;
                             break;
                         }
                     }
-
-                    $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
-                    $svc->execute([$service_id]);
-                    $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
 
                     if ($free_tech) {
                         // Auto-assign: create appointment as Approved
@@ -142,7 +197,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($action === 'add_vehicle') {
         $plate  = strtoupper(trim($_POST['plate_number'] ?? ''));
         $make   = trim($_POST['make'] ?? '');
-        $model  = trim($_POST['model'] ?? '');
+        $modelRaw = trim($_POST['model'] ?? '');
+        $modelOther = trim($_POST['model_other'] ?? '');
+        $model  = ($modelRaw === '__other__') ? $modelOther : $modelRaw;
         $year   = (int) ($_POST['year'] ?? date('Y'));
         $color  = trim($_POST['color'] ?? '');
 
@@ -917,11 +974,34 @@ $cartCount = $cartStmt->fetchColumn();
                         </div>
                         <div>
                             <label>Make <span class="required">*</span></label>
-                            <input type="text" name="make" class="form-control" placeholder="e.g. Toyota" required>
+                            <select name="make" id="vMake" class="form-control" onchange="populateBookModels()" required>
+                                <option value="">-- Select Make --</option>
+                                <option value="Toyota">Toyota</option>
+                                <option value="Honda">Honda</option>
+                                <option value="Mitsubishi">Mitsubishi</option>
+                                <option value="Nissan">Nissan</option>
+                                <option value="Ford">Ford</option>
+                                <option value="Hyundai">Hyundai</option>
+                                <option value="Kia">Kia</option>
+                                <option value="Suzuki">Suzuki</option>
+                                <option value="Mazda">Mazda</option>
+                                <option value="Isuzu">Isuzu</option>
+                                <option value="Chevrolet">Chevrolet</option>
+                                <option value="BMW">BMW</option>
+                                <option value="Mercedes-Benz">Mercedes-Benz</option>
+                                <option value="Audi">Audi</option>
+                                <option value="Lexus">Lexus</option>
+                            </select>
                         </div>
                         <div>
                             <label>Model <span class="required">*</span></label>
-                            <input type="text" name="model" class="form-control" placeholder="e.g. Vios" required>
+                            <select name="model" id="vModel" class="form-control" required>
+                                <option value="">-- Select Make First --</option>
+                            </select>
+                        </div>
+                        <div class="full-width" id="vModelOtherWrap" style="display:none;">
+                            <label>New Model Name <span class="required">*</span></label>
+                            <input type="text" name="model_other" id="vModelOther" class="form-control" placeholder="Enter new model">
                         </div>
                         <div>
                             <label>Year</label>
@@ -1073,6 +1153,58 @@ document.addEventListener('keydown', function (e) {
 function toggleVehicleForm() {
     document.getElementById('vehicleFormPanel').classList.toggle('active');
 }
+
+const bookMakeModelMap = {
+    Toyota: ['Vios', 'Corolla Altis', 'Fortuner', 'Innova', 'Hilux', 'Wigo', 'Avanza'],
+    Honda: ['Civic', 'City', 'CR-V', 'BR-V', 'HR-V', 'Jazz'],
+    Mitsubishi: ['Montero Sport', 'Mirage', 'Xpander', 'L300', 'Strada'],
+    Nissan: ['Navara', 'Almera', 'Terra', 'Livina'],
+    Ford: ['Ranger', 'Everest', 'Territory', 'EcoSport'],
+    Hyundai: ['Accent', 'Tucson', 'Starex', 'Reina'],
+    Kia: ['Soluto', 'Seltos', 'Sportage', 'Stonic'],
+    Suzuki: ['Ertiga', 'Swift', 'Dzire', 'Celerio'],
+    Mazda: ['Mazda2', 'Mazda3', 'CX-5', 'BT-50'],
+    Isuzu: ['D-Max', 'MU-X'],
+    Chevrolet: ['Trailblazer', 'Spark'],
+    BMW: ['3 Series', '5 Series', 'X3', 'X5'],
+    'Mercedes-Benz': ['C-Class', 'E-Class', 'GLC'],
+    Audi: ['A4', 'Q5', 'Q7'],
+    Lexus: ['IS', 'ES', 'RX', 'NX']
+};
+
+function populateBookModels() {
+    const makeSel = document.getElementById('vMake');
+    const modelSel = document.getElementById('vModel');
+    const otherWrap = document.getElementById('vModelOtherWrap');
+    const models = bookMakeModelMap[makeSel.value] || [];
+
+    modelSel.innerHTML = '';
+    if (!makeSel.value) {
+        modelSel.innerHTML = '<option value="">-- Select Make First --</option>';
+        otherWrap.style.display = 'none';
+        return;
+    }
+
+    modelSel.innerHTML = '<option value="">-- Select Model --</option>';
+    models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+    });
+    const otherOpt = document.createElement('option');
+    otherOpt.value = '__other__';
+    otherOpt.textContent = 'Other / New Model';
+    modelSel.appendChild(otherOpt);
+    otherWrap.style.display = 'none';
+}
+
+document.addEventListener('change', function (e) {
+    if (e.target && e.target.id === 'vModel') {
+        const showOther = e.target.value === '__other__';
+        document.getElementById('vModelOtherWrap').style.display = showOther ? 'block' : 'none';
+    }
+});
 </script>
 
 </body>

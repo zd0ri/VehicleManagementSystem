@@ -15,6 +15,30 @@ $full_name = $_SESSION['full_name'];
 $success_msg = '';
 $error_msg   = '';
 
+$knownVehicleModels = [
+    'Toyota' => ['Vios', 'Corolla Altis', 'Fortuner', 'Innova', 'Hilux', 'Wigo', 'Avanza'],
+    'Honda' => ['Civic', 'City', 'CR-V', 'BR-V', 'HR-V', 'Jazz'],
+    'Mitsubishi' => ['Montero Sport', 'Mirage', 'Xpander', 'L300', 'Strada'],
+    'Nissan' => ['Navara', 'Almera', 'Terra', 'Livina'],
+    'Ford' => ['Ranger', 'Everest', 'Territory', 'EcoSport'],
+    'Hyundai' => ['Accent', 'Tucson', 'Starex', 'Reina'],
+    'Kia' => ['Soluto', 'Seltos', 'Sportage', 'Stonic'],
+    'Suzuki' => ['Ertiga', 'Swift', 'Dzire', 'Celerio'],
+    'Mazda' => ['Mazda2', 'Mazda3', 'CX-5', 'BT-50'],
+    'Isuzu' => ['D-Max', 'MU-X'],
+    'Chevrolet' => ['Trailblazer', 'Spark'],
+    'BMW' => ['3 Series', '5 Series', 'X3', 'X5'],
+    'Mercedes-Benz' => ['C-Class', 'E-Class', 'GLC'],
+    'Audi' => ['A4', 'Q5', 'Q7'],
+    'Lexus' => ['IS', 'ES', 'RX', 'NX'],
+];
+
+function profileResolvedModel(array $post, string $modelKey, string $otherKey): string {
+    $modelRaw = trim($post[$modelKey] ?? '');
+    $modelOther = trim($post[$otherKey] ?? '');
+    return $modelRaw === '__other__' ? $modelOther : $modelRaw;
+}
+
 // ── POST handlers ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
@@ -82,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $plate = strtoupper(trim($_POST['plate_number'] ?? ''));
         $vin   = strtoupper(trim($_POST['vin'] ?? ''));
         $make  = trim($_POST['make'] ?? '');
-        $model = trim($_POST['model'] ?? '');
+        $model = profileResolvedModel($_POST, 'model', 'model_other');
         $year  = (int) ($_POST['year'] ?? 0);
         $color = trim($_POST['color'] ?? '');
 
@@ -101,7 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $plate = strtoupper(trim($_POST['plate_number'] ?? ''));
         $vin   = strtoupper(trim($_POST['vin'] ?? ''));
         $make  = trim($_POST['make'] ?? '');
-        $model = trim($_POST['model'] ?? '');
+        $model = profileResolvedModel($_POST, 'model', 'model_other_edit');
         $year  = (int) ($_POST['year'] ?? 0);
         $color = trim($_POST['color'] ?? '');
 
@@ -999,11 +1023,22 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
                                 </div>
                                 <div class="form-group">
                                     <label>Make *</label>
-                                    <input type="text" name="make" placeholder="e.g. Toyota" required>
+                                    <select name="make" id="profile_add_make" onchange="profilePopulateModelOptions('profile_add_make','profile_add_model','profile_add_model_other_wrap')" required>
+                                        <option value="">-- Select Make --</option>
+                                        <?php foreach (array_keys($knownVehicleModels) as $mk): ?>
+                                            <option value="<?= htmlspecialchars($mk) ?>"><?= htmlspecialchars($mk) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
                                 </div>
                                 <div class="form-group">
                                     <label>Model *</label>
-                                    <input type="text" name="model" placeholder="e.g. Vios" required>
+                                    <select name="model" id="profile_add_model" required>
+                                        <option value="">-- Select Make First --</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" id="profile_add_model_other_wrap" style="display:none;">
+                                    <label>New Model *</label>
+                                    <input type="text" name="model_other" id="profile_add_model_other" placeholder="Enter new model">
                                 </div>
                                 <div class="form-group">
                                     <label>Year</label>
@@ -1089,11 +1124,35 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
                                                 </div>
                                                 <div class="form-group">
                                                     <label>Make *</label>
-                                                    <input type="text" name="make" value="<?= htmlspecialchars($v['make'] ?? '') ?>" required>
+                                                    <select name="make" id="profile_edit_make_<?= (int)$v['vehicle_id'] ?>" onchange="profilePopulateModelOptions('profile_edit_make_<?= (int)$v['vehicle_id'] ?>','profile_edit_model_<?= (int)$v['vehicle_id'] ?>','profile_edit_model_other_wrap_<?= (int)$v['vehicle_id'] ?>')" required>
+                                                        <option value="">-- Select Make --</option>
+                                                        <?php foreach (array_keys($knownVehicleModels) as $mk): ?>
+                                                            <option value="<?= htmlspecialchars($mk) ?>" <?= (($v['make'] ?? '') === $mk) ? 'selected' : '' ?>><?= htmlspecialchars($mk) ?></option>
+                                                        <?php endforeach; ?>
+                                                        <?php if (!empty($v['make']) && !isset($knownVehicleModels[$v['make']])): ?>
+                                                            <option value="<?= htmlspecialchars($v['make']) ?>" selected><?= htmlspecialchars($v['make']) ?> (existing)</option>
+                                                        <?php endif; ?>
+                                                    </select>
                                                 </div>
                                                 <div class="form-group">
                                                     <label>Model *</label>
-                                                    <input type="text" name="model" value="<?= htmlspecialchars($v['model'] ?? '') ?>" required>
+                                                    <?php
+                                                        $currentMake = $v['make'] ?? '';
+                                                        $currentModel = $v['model'] ?? '';
+                                                        $knownForMake = $knownVehicleModels[$currentMake] ?? [];
+                                                        $isKnownModel = in_array($currentModel, $knownForMake, true);
+                                                    ?>
+                                                    <select name="model" id="profile_edit_model_<?= (int)$v['vehicle_id'] ?>" required>
+                                                        <option value="">-- Select Model --</option>
+                                                        <?php foreach ($knownForMake as $m): ?>
+                                                            <option value="<?= htmlspecialchars($m) ?>" <?= $currentModel === $m ? 'selected' : '' ?>><?= htmlspecialchars($m) ?></option>
+                                                        <?php endforeach; ?>
+                                                        <option value="__other__" <?= (!$isKnownModel && $currentModel !== '') ? 'selected' : '' ?>>Other / New Model</option>
+                                                    </select>
+                                                </div>
+                                                <div class="form-group" id="profile_edit_model_other_wrap_<?= (int)$v['vehicle_id'] ?>" style="<?= (!$isKnownModel && $currentModel !== '') ? '' : 'display:none;' ?>">
+                                                    <label>New Model *</label>
+                                                    <input type="text" name="model_other_edit" id="profile_edit_model_other_<?= (int)$v['vehicle_id'] ?>" value="<?= (!$isKnownModel) ? htmlspecialchars($currentModel) : '' ?>" placeholder="Enter new model">
                                                 </div>
                                                 <div class="form-group">
                                                     <label>Year</label>
@@ -1134,6 +1193,51 @@ if (isset($_GET['tab']) && in_array($_GET['tab'], ['profile', 'password', 'vehic
 
 <!-- ========== JAVASCRIPT ========== -->
 <script>
+const profileMakeModelMap = <?= json_encode($knownVehicleModels) ?>;
+
+function profilePopulateModelOptions(makeId, modelId, otherWrapId, selectedModel = '') {
+    const makeSel = document.getElementById(makeId);
+    const modelSel = document.getElementById(modelId);
+    const otherWrap = document.getElementById(otherWrapId);
+    if (!makeSel || !modelSel || !otherWrap) return;
+
+    const models = profileMakeModelMap[makeSel.value] || [];
+    modelSel.innerHTML = '';
+
+    if (!makeSel.value) {
+        modelSel.innerHTML = '<option value="">-- Select Make First --</option>';
+        otherWrap.style.display = 'none';
+        return;
+    }
+
+    modelSel.innerHTML = '<option value="">-- Select Model --</option>';
+    models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+    });
+    const otherOpt = document.createElement('option');
+    otherOpt.value = '__other__';
+    otherOpt.textContent = 'Other / New Model';
+    modelSel.appendChild(otherOpt);
+
+    if (selectedModel) {
+        if (models.includes(selectedModel)) {
+            modelSel.value = selectedModel;
+            otherWrap.style.display = 'none';
+        } else {
+            modelSel.value = '__other__';
+            otherWrap.style.display = '';
+            const suffix = modelId.replace('profile_edit_model_', '');
+            const editOther = document.getElementById('profile_edit_model_other_' + suffix);
+            if (editOther) editOther.value = selectedModel;
+        }
+    } else {
+        otherWrap.style.display = 'none';
+    }
+}
+
 // Tab Switching
 function switchTab(tab) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1167,6 +1271,26 @@ if (mobileToggle) {
 window.addEventListener('scroll', function () {
     const header = document.querySelector('.main-header');
     if (header) header.classList.toggle('sticky', window.scrollY > 100);
+});
+
+document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'profile_add_model') {
+        const wrap = document.getElementById('profile_add_model_other_wrap');
+        wrap.style.display = e.target.value === '__other__' ? '' : 'none';
+        if (e.target.value !== '__other__') {
+            const field = document.getElementById('profile_add_model_other');
+            if (field) field.value = '';
+        }
+    }
+    if (e.target && e.target.id.startsWith('profile_edit_model_')) {
+        const suffix = e.target.id.replace('profile_edit_model_', '');
+        const wrap = document.getElementById('profile_edit_model_other_wrap_' + suffix);
+        if (wrap) wrap.style.display = e.target.value === '__other__' ? '' : 'none';
+        if (e.target.value !== '__other__') {
+            const field = document.getElementById('profile_edit_model_other_' + suffix);
+            if (field) field.value = '';
+        }
+    }
 });
 </script>
 

@@ -8,6 +8,56 @@ $page_title = 'Assignments';
 $current_page = 'assignments';
 require_once __DIR__ . '/../includes/db.php';
 
+// Backward-compatible schema update for expertise-based assignment.
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('expertise', $cols, true)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN expertise TEXT NULL AFTER status");
+    }
+} catch (Exception $e) {
+    // Keep page usable even if schema migration cannot run.
+}
+
+function adminServiceNeedsExpertise(string $serviceName): array {
+    $n = strtolower($serviceName);
+    $map = [
+        'engine' => ['engine'],
+        'oil' => ['oil', 'lubrication', 'engine'],
+        'brake' => ['brake'],
+        'tire' => ['tire', 'wheel', 'alignment'],
+        'wheel' => ['wheel', 'tire', 'alignment'],
+        'battery' => ['battery', 'electrical'],
+        'electrical' => ['electrical', 'battery'],
+        'detail' => ['detail', 'detailing', 'body'],
+    ];
+    foreach ($map as $key => $skills) {
+        if (strpos($n, $key) !== false) {
+            return $skills;
+        }
+    }
+    return [];
+}
+
+function adminTechMatchesService(string $serviceName, ?string $expertise): bool {
+    if (!$expertise) {
+        return false;
+    }
+    $e = strtolower($expertise);
+    if (strpos($e, 'general') !== false || strpos($e, 'all') !== false) {
+        return true;
+    }
+    $needs = adminServiceNeedsExpertise($serviceName);
+    if (empty($needs)) {
+        return true;
+    }
+    foreach ($needs as $skill) {
+        if (strpos($e, $skill) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 $success = '';
 $error = '';
 
@@ -18,8 +68,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $status = $_POST['status'] ?? 'Assigned';
             $start_time = ($status === 'Ongoing') ? date('Y-m-d H:i:s') : null;
             $notes = $_POST['notes'] ?: null;
+
+            $serviceId = (int)($_POST['service_id'] ?? 0);
+            $technicianId = (int)($_POST['technician_id'] ?? 0);
+
+            if (!$technicianId && $serviceId) {
+                $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+                $svc->execute([$serviceId]);
+                $svcName = (string)($svc->fetchColumn() ?: '');
+
+                $techStmt = $pdo->query("SELECT u.user_id, u.expertise,
+                        COUNT(a.assignment_id) AS active_count,
+                        SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
+                    FROM users u
+                    LEFT JOIN assignments a ON u.user_id = a.technician_id AND a.status IN ('Assigned', 'Ongoing')
+                    WHERE u.role = 'technician' AND u.status = 'active'
+                    GROUP BY u.user_id
+                    ORDER BY ongoing_count ASC, active_count ASC");
+                $allTechs = $techStmt->fetchAll();
+                $matching = array_values(array_filter($allTechs, function($t) use ($svcName) {
+                    return adminTechMatchesService($svcName, $t['expertise'] ?? null);
+                }));
+                $pool = !empty($matching) ? $matching : $allTechs;
+                foreach ($pool as $t) {
+                    if ((int)$t['ongoing_count'] === 0) {
+                        $technicianId = (int)$t['user_id'];
+                        break;
+                    }
+                }
+                if (!$technicianId && !empty($pool)) {
+                    $technicianId = (int)$pool[0]['user_id'];
+                }
+            }
+
+            if (!$technicianId) {
+                throw new Exception('No available technician for this assignment.');
+            }
+
             $stmt = $pdo->prepare("INSERT INTO assignments (vehicle_id, technician_id, service_id, status, start_time, notes) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$_POST['vehicle_id'], $_POST['technician_id'], $_POST['service_id'], $status, $start_time, $notes]);
+            $stmt->execute([$_POST['vehicle_id'], $technicianId, $_POST['service_id'], $status, $start_time, $notes]);
             $new_id = $pdo->lastInsertId();
             logAudit($pdo, 'Created assignment', 'assignments', $new_id);
             $success = 'Assignment added successfully.';
@@ -66,7 +153,7 @@ $assignments = $pdo->query("SELECT a.*, v.plate_number, v.make, v.model, v.year,
     ORDER BY a.assignment_id DESC")->fetchAll();
 
 $vehicles = $pdo->query("SELECT vehicle_id, plate_number, make, model FROM vehicles ORDER BY plate_number")->fetchAll();
-$technicians_list = $pdo->query("SELECT user_id, full_name FROM users WHERE role='technician' AND status='active' ORDER BY full_name")->fetchAll();
+$technicians_list = $pdo->query("SELECT user_id, full_name, expertise FROM users WHERE role='technician' AND status='active' ORDER BY full_name")->fetchAll();
 $services_list = $pdo->query("SELECT service_id, service_name FROM services ORDER BY service_name")->fetchAll();
 
 // Parts used per assignment (for admin view)
@@ -139,7 +226,10 @@ foreach ($parts_q->fetchAll() as $p) {
                             </td>
                             <td><?= htmlspecialchars(($row['make'] ?? '') . ' ' . ($row['model'] ?? '') . ' - ' . ($row['plate_number'] ?? 'N/A')) ?></td>
                             <td><?= htmlspecialchars($row['technician_name'] ?? 'N/A') ?></td>
-                            <td><?= htmlspecialchars($row['service_name'] ?? 'N/A') ?></td>
+                            <td>
+                                <?= htmlspecialchars($row['service_name'] ?? 'N/A') ?>
+                                <div style="font-size:11px;color:#888;">₱<?= number_format((float)($row['base_price'] ?? 0), 2) ?></div>
+                            </td>
                             <td>
                                 <?php $st = $row['status'] ?? 'Assigned';
                                 $bc = 'badge-assigned';
@@ -156,9 +246,12 @@ foreach ($parts_q->fetchAll() as $p) {
                                     <?php $pt = 0; foreach ($ap as $pp): $pt += $pp['quantity'] * $pp['unit_price']; ?>
                                     <div style="font-size:12px;white-space:nowrap;"><?= htmlspecialchars($pp['item_name']) ?> x<?= $pp['quantity'] ?></div>
                                     <?php endforeach; ?>
-                                    <div style="font-size:11px;font-weight:600;color:#8e44ad;margin-top:2px;">Total: ₱<?= number_format($pt, 2) ?></div>
+                                    <?php $svcTotal = (float)($row['base_price'] ?? 0); $grand = $svcTotal + $pt; ?>
+                                    <div style="font-size:11px;margin-top:2px;">Parts: <strong>₱<?= number_format($pt, 2) ?></strong></div>
+                                    <div style="font-size:11px;color:#8e44ad;">Total: <strong>₱<?= number_format($grand, 2) ?></strong></div>
                                 <?php else: ?>
-                                    <span style="color:#888;font-size:12px;">—</span>
+                                    <span style="color:#888;font-size:12px;">No parts</span>
+                                    <div style="font-size:11px;color:#8e44ad;">Total: <strong>₱<?= number_format((float)($row['base_price'] ?? 0), 2) ?></strong></div>
                                 <?php endif; ?>
                             </td>
                             <td class="action-btns">
@@ -202,7 +295,7 @@ foreach ($parts_q->fetchAll() as $p) {
             <div class="modal-overlay" id="addModal"><div class="modal"><div class="modal-header"><h3>Add Assignment</h3><button class="modal-close" onclick="closeModal('addModal')">&times;</button></div>
             <form method="POST"><input type="hidden" name="action" value="add"><div class="modal-body">
                 <div class="form-group"><label>Vehicle</label><select name="vehicle_id" class="form-control" required><option value="">Select Vehicle</option><?php foreach ($vehicles as $v): ?><option value="<?= $v['vehicle_id'] ?>"><?= htmlspecialchars($v['make'] . ' ' . $v['model'] . ' - ' . $v['plate_number']) ?></option><?php endforeach; ?></select></div>
-                <div class="form-group"><label>Technician</label><select name="technician_id" class="form-control" required><option value="">Select Technician</option><?php foreach ($technicians_list as $t): ?><option value="<?= $t['user_id'] ?>"><?= htmlspecialchars($t['full_name']) ?></option><?php endforeach; ?></select></div>
+                <div class="form-group"><label>Technician</label><select name="technician_id" class="form-control"><option value="">Auto-assign by expertise</option><?php foreach ($technicians_list as $t): ?><option value="<?= $t['user_id'] ?>"><?= htmlspecialchars($t['full_name']) ?><?= !empty($t['expertise']) ? ' - ' . htmlspecialchars($t['expertise']) : '' ?></option><?php endforeach; ?></select></div>
                 <div class="form-group"><label>Service</label><select name="service_id" class="form-control" required><option value="">Select Service</option><?php foreach ($services_list as $s): ?><option value="<?= $s['service_id'] ?>"><?= htmlspecialchars($s['service_name']) ?></option><?php endforeach; ?></select></div>
                 <div class="form-group"><label>Status</label><select name="status" class="form-control"><option value="Assigned">Assigned</option><option value="Ongoing">Ongoing</option><option value="Finished">Finished</option></select></div>
                 <div class="form-group"><label>Notes</label><textarea name="notes" class="form-control" rows="3"></textarea></div>

@@ -2,6 +2,56 @@
 session_start();
 require_once __DIR__ . '/includes/db.php';
 
+// Backward-compatible schema update for expertise-based assignment.
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('expertise', $cols, true)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN expertise TEXT NULL AFTER status");
+    }
+} catch (Exception $e) {
+    // Keep homepage functional even if migration cannot run.
+}
+
+function homeServiceNeedsExpertise(string $serviceName): array {
+    $n = strtolower($serviceName);
+    $map = [
+        'engine' => ['engine'],
+        'oil' => ['oil', 'lubrication', 'engine'],
+        'brake' => ['brake'],
+        'tire' => ['tire', 'wheel', 'alignment'],
+        'wheel' => ['wheel', 'tire', 'alignment'],
+        'battery' => ['battery', 'electrical'],
+        'electrical' => ['electrical', 'battery'],
+        'detail' => ['detail', 'detailing', 'body'],
+    ];
+    foreach ($map as $key => $skills) {
+        if (strpos($n, $key) !== false) {
+            return $skills;
+        }
+    }
+    return [];
+}
+
+function homeTechMatchesService(string $serviceName, ?string $expertise): bool {
+    if (!$expertise) {
+        return false;
+    }
+    $e = strtolower($expertise);
+    if (strpos($e, 'general') !== false || strpos($e, 'all') !== false) {
+        return true;
+    }
+    $needs = homeServiceNeedsExpertise($serviceName);
+    if (empty($needs)) {
+        return true;
+    }
+    foreach ($needs as $skill) {
+        if (strpos($e, $skill) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Get cart count for logged-in customers
 $cartCount = 0;
 if (isset($_SESSION['client_id'])) {
@@ -147,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
 
             // Find least busy available technician (with NO ongoing assignments)
             $tech_stmt = $pdo->query("
-                SELECT u.user_id, u.full_name,
+                SELECT u.user_id, u.full_name, u.expertise,
                        COUNT(a.assignment_id) AS active_count,
                        SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
                 FROM users u
@@ -158,20 +208,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
             ");
             $all_techs = $tech_stmt->fetchAll();
 
-            // Find a tech with zero ongoing assignments
+            $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
+            $svc->execute([$service_id]);
+            $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
+
+            $matching_techs = array_values(array_filter($all_techs, function($t) use ($svc_name) {
+                return homeTechMatchesService($svc_name, $t['expertise'] ?? null);
+            }));
+            $pool = !empty($matching_techs) ? $matching_techs : $all_techs;
+
             $free_tech = null;
             $least_busy_tech = null;
-            foreach ($all_techs as $t) {
+            foreach ($pool as $t) {
                 if (!$least_busy_tech) $least_busy_tech = $t;
                 if ((int)$t['ongoing_count'] === 0) {
                     $free_tech = $t;
                     break;
                 }
             }
-
-            $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
-            $svc->execute([$service_id]);
-            $svc_name = $svc->fetchColumn() ?: 'Vehicle Service';
 
             if ($free_tech) {
                 // Technician available — auto-assign
@@ -218,7 +272,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_action'])) {
     if ($_POST['ajax_action'] === 'add_vehicle') {
         $plate = strtoupper(trim($_POST['plate_number'] ?? ''));
         $make = trim($_POST['make'] ?? '');
-        $model = trim($_POST['model'] ?? '');
+        $modelRaw = trim($_POST['model'] ?? '');
+        $modelOther = trim($_POST['model_other'] ?? '');
+        $model = ($modelRaw === '__other__') ? $modelOther : $modelRaw;
         $year = (int)($_POST['year'] ?? date('Y'));
         $color = trim($_POST['color'] ?? '');
         if (!$plate || !$make || !$model) {
@@ -261,6 +317,7 @@ $catIcons = [
     'Body Parts' => 'fa-car-side', 'Electronics' => 'fa-microchip', 'Suspension' => 'fa-car-alt',
     'Cooling System' => 'fa-thermometer-half', 'Ignition' => 'fa-plug',
 ];
+$promoCategories = ['Brake Parts', 'Engine Parts', 'Wheels & Tires'];
 
 // Logged-in state for JS
 $isLoggedIn = isset($_SESSION['client_id']) ? 'true' : 'false';
@@ -547,9 +604,10 @@ if (isset($_SESSION['role'])) {
                 $imgSrc = ($prod['image'] && file_exists(__DIR__ . '/uploads/' . $prod['image'])) ? 'uploads/' . htmlspecialchars($prod['image']) : '';
             ?>
             <div class="product-card" data-category="<?= htmlspecialchars($prod['category'] ?? 'General') ?>" data-item-id="<?= $prod['item_id'] ?>">
-                <?php if ($prod['quantity'] <= 5): ?>
-                <div class="product-badges"><span class="badge-hot">LOW STOCK</span></div>
-                <?php endif; ?>
+                <div class="product-badges">
+                    <?php if (in_array($prod['category'] ?? '', $promoCategories, true)): ?><span class="badge-sale">70% OFF</span><?php endif; ?>
+                    <?php if ($prod['quantity'] <= 5): ?><span class="badge-hot">LOW STOCK</span><?php endif; ?>
+                </div>
                 <div class="product-image">
                     <?php if ($imgSrc): ?>
                         <img src="<?= $imgSrc ?>" alt="<?= htmlspecialchars($prod['item_name']) ?>" style="max-width:100%;max-height:160px;object-fit:contain;">
@@ -603,6 +661,7 @@ if (isset($_SESSION['role'])) {
                         <h3><?= htmlspecialchars($dealProduct['item_name']) ?></h3>
                         <div class="deal-price">
                             <span class="price-current">₱<?= number_format($dealProduct['unit_price'], 2) ?></span>
+                            <span class="discount-badge">UP TO 70% OFF</span>
                         </div>
                         <p class="deal-description"><?= htmlspecialchars($dealProduct['description']) ?></p>
                         <!-- Countdown -->
@@ -750,7 +809,10 @@ if (isset($_SESSION['role'])) {
                 $icon = $catIcons[$prod['category']] ?? 'fa-box';
             ?>
             <div class="product-card" data-item-id="<?= $prod['item_id'] ?>">
-                <div class="product-badges"><span class="badge-new">NEW</span></div>
+                <div class="product-badges">
+                    <span class="badge-new">NEW</span>
+                    <?php if (in_array($prod['category'] ?? '', $promoCategories, true)): ?><span class="badge-sale">70% OFF</span><?php endif; ?>
+                </div>
                 <div class="product-image">
                     <?php if ($prod['image'] && file_exists(__DIR__ . '/uploads/' . $prod['image'])): ?>
                         <img src="uploads/<?= htmlspecialchars($prod['image']) ?>" alt="<?= htmlspecialchars($prod['item_name']) ?>" style="max-width:100%;max-height:160px;object-fit:contain;">
@@ -814,6 +876,9 @@ if (isset($_SESSION['role'])) {
                 $icon = $catIcons[$prod['category']] ?? 'fa-box';
             ?>
             <div class="product-card" data-item-id="<?= $prod['item_id'] ?>">
+                <?php if (in_array($prod['category'] ?? '', $promoCategories, true)): ?>
+                <div class="product-badges"><span class="badge-sale">70% OFF</span></div>
+                <?php endif; ?>
                 <div class="product-image">
                     <?php if ($prod['image'] && file_exists(__DIR__ . '/uploads/' . $prod['image'])): ?>
                         <img src="uploads/<?= htmlspecialchars($prod['image']) ?>" alt="<?= htmlspecialchars($prod['item_name']) ?>" style="max-width:100%;max-height:160px;object-fit:contain;">
@@ -1088,11 +1153,34 @@ $customerReviews = $reviewStmt->fetchAll();
                     </div>
                     <div>
                         <label>Make <span class="req">*</span></label>
-                        <input type="text" id="vMake" class="form-control" placeholder="e.g. Toyota">
+                        <select id="vMake" class="form-control" onchange="populateModelOptions()">
+                            <option value="">-- Select Make --</option>
+                            <option value="Toyota">Toyota</option>
+                            <option value="Honda">Honda</option>
+                            <option value="Mitsubishi">Mitsubishi</option>
+                            <option value="Nissan">Nissan</option>
+                            <option value="Ford">Ford</option>
+                            <option value="Hyundai">Hyundai</option>
+                            <option value="Kia">Kia</option>
+                            <option value="Suzuki">Suzuki</option>
+                            <option value="Mazda">Mazda</option>
+                            <option value="Isuzu">Isuzu</option>
+                            <option value="Chevrolet">Chevrolet</option>
+                            <option value="BMW">BMW</option>
+                            <option value="Mercedes-Benz">Mercedes-Benz</option>
+                            <option value="Audi">Audi</option>
+                            <option value="Lexus">Lexus</option>
+                        </select>
                     </div>
                     <div>
                         <label>Model <span class="req">*</span></label>
-                        <input type="text" id="vModel" class="form-control" placeholder="e.g. Vios">
+                        <select id="vModel" class="form-control">
+                            <option value="">-- Select Make First --</option>
+                        </select>
+                    </div>
+                    <div class="full-width" id="vModelOtherWrap" style="display:none;">
+                        <label>New Model Name <span class="req">*</span></label>
+                        <input type="text" id="vModelOther" class="form-control" placeholder="Enter new model">
                     </div>
                     <div>
                         <label>Year</label>
@@ -1468,10 +1556,63 @@ function toggleVehicleForm() {
     document.getElementById('vehicleFormPanel').classList.toggle('active');
 }
 
+const makeModelMap = {
+    Toyota: ['Vios', 'Corolla Altis', 'Fortuner', 'Innova', 'Hilux', 'Wigo', 'Avanza'],
+    Honda: ['Civic', 'City', 'CR-V', 'BR-V', 'HR-V', 'Jazz'],
+    Mitsubishi: ['Montero Sport', 'Mirage', 'Xpander', 'L300', 'Strada'],
+    Nissan: ['Navara', 'Almera', 'Terra', 'Livina'],
+    Ford: ['Ranger', 'Everest', 'Territory', 'EcoSport'],
+    Hyundai: ['Accent', 'Tucson', 'Starex', 'Reina'],
+    Kia: ['Soluto', 'Seltos', 'Sportage', 'Stonic'],
+    Suzuki: ['Ertiga', 'Swift', 'Dzire', 'Celerio'],
+    Mazda: ['Mazda2', 'Mazda3', 'CX-5', 'BT-50'],
+    Isuzu: ['D-Max', 'MU-X'],
+    Chevrolet: ['Trailblazer', 'Spark'],
+    BMW: ['3 Series', '5 Series', 'X3', 'X5'],
+    'Mercedes-Benz': ['C-Class', 'E-Class', 'GLC'],
+    Audi: ['A4', 'Q5', 'Q7'],
+    Lexus: ['IS', 'ES', 'RX', 'NX']
+};
+
+function populateModelOptions() {
+    const makeSel = document.getElementById('vMake');
+    const modelSel = document.getElementById('vModel');
+    const otherWrap = document.getElementById('vModelOtherWrap');
+    const models = makeModelMap[makeSel.value] || [];
+
+    modelSel.innerHTML = '';
+    if (!makeSel.value) {
+        modelSel.innerHTML = '<option value="">-- Select Make First --</option>';
+        otherWrap.style.display = 'none';
+        return;
+    }
+
+    modelSel.innerHTML = '<option value="">-- Select Model --</option>';
+    models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+    });
+    const otherOpt = document.createElement('option');
+    otherOpt.value = '__other__';
+    otherOpt.textContent = 'Other / New Model';
+    modelSel.appendChild(otherOpt);
+    otherWrap.style.display = 'none';
+}
+
+document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'vModel') {
+        document.getElementById('vModelOtherWrap').style.display = (e.target.value === '__other__') ? 'block' : 'none';
+    }
+});
+
 function submitAddVehicle() {
     const plate = document.getElementById('vPlate').value.trim();
     const make = document.getElementById('vMake').value.trim();
-    const model = document.getElementById('vModel').value.trim();
+    const modelSel = document.getElementById('vModel').value;
+    const modelOther = document.getElementById('vModelOther').value.trim();
+    const model = modelSel === '__other__' ? modelOther : modelSel;
     const year = document.getElementById('vYear').value;
     const color = document.getElementById('vColor').value.trim();
 
@@ -1485,6 +1626,9 @@ function submitAddVehicle() {
     fd.append('plate_number', plate);
     fd.append('make', make);
     fd.append('model', model);
+    if (modelSel === '__other__') {
+        fd.append('model_other', modelOther);
+    }
     fd.append('year', year);
     fd.append('color', color);
 
@@ -1496,7 +1640,9 @@ function submitAddVehicle() {
             // Clear form
             document.getElementById('vPlate').value = '';
             document.getElementById('vMake').value = '';
-            document.getElementById('vModel').value = '';
+            document.getElementById('vModel').innerHTML = '<option value="">-- Select Make First --</option>';
+            document.getElementById('vModelOther').value = '';
+            document.getElementById('vModelOtherWrap').style.display = 'none';
             document.getElementById('vColor').value = '';
             document.getElementById('vehicleFormPanel').classList.remove('active');
             // Refresh vehicles dropdown

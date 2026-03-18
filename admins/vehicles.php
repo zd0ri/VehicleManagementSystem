@@ -13,19 +13,44 @@ require_once __DIR__ . '/../includes/db.php';
 $success = '';
 $error = '';
 
+$knownVehicleModels = [
+    'Toyota' => ['Vios', 'Corolla Altis', 'Fortuner', 'Innova', 'Hilux', 'Wigo', 'Avanza'],
+    'Honda' => ['Civic', 'City', 'CR-V', 'BR-V', 'HR-V', 'Jazz'],
+    'Mitsubishi' => ['Montero Sport', 'Mirage', 'Xpander', 'L300', 'Strada'],
+    'Nissan' => ['Navara', 'Almera', 'Terra', 'Livina'],
+    'Ford' => ['Ranger', 'Everest', 'Territory', 'EcoSport'],
+    'Hyundai' => ['Accent', 'Tucson', 'Starex', 'Reina'],
+    'Kia' => ['Soluto', 'Seltos', 'Sportage', 'Stonic'],
+    'Suzuki' => ['Ertiga', 'Swift', 'Dzire', 'Celerio'],
+    'Mazda' => ['Mazda2', 'Mazda3', 'CX-5', 'BT-50'],
+    'Isuzu' => ['D-Max', 'MU-X'],
+    'Chevrolet' => ['Trailblazer', 'Spark'],
+    'BMW' => ['3 Series', '5 Series', 'X3', 'X5'],
+    'Mercedes-Benz' => ['C-Class', 'E-Class', 'GLC'],
+    'Audi' => ['A4', 'Q5', 'Q7'],
+    'Lexus' => ['IS', 'ES', 'RX', 'NX'],
+];
+
+function avResolvedModel(array $post, string $modelKey, string $otherKey): string {
+    $modelRaw = trim($post[$modelKey] ?? '');
+    $modelOther = trim($post[$otherKey] ?? '');
+    return $modelRaw === '__other__' ? $modelOther : $modelRaw;
+}
+
 // Handle POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
     if ($action === 'add') {
         try {
+            $model = avResolvedModel($_POST, 'model', 'model_other');
             $stmt = $pdo->prepare("INSERT INTO vehicles (client_id, plate_number, vin, make, model, year, color, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([
                 $_POST['client_id'],
                 $_POST['plate_number'],
                 $_POST['vin'],
                 $_POST['make'],
-                $_POST['model'],
+                $model,
                 $_POST['year'],
                 $_POST['color'],
                 $_POST['status']
@@ -40,13 +65,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($action === 'edit') {
         try {
+            $model = avResolvedModel($_POST, 'model', 'model_other_edit');
             $stmt = $pdo->prepare("UPDATE vehicles SET client_id = ?, plate_number = ?, vin = ?, make = ?, model = ?, year = ?, color = ?, status = ? WHERE vehicle_id = ?");
             $stmt->execute([
                 $_POST['client_id'],
                 $_POST['plate_number'],
                 $_POST['vin'],
                 $_POST['make'],
-                $_POST['model'],
+                $model,
                 $_POST['year'],
                 $_POST['color'],
                 $_POST['status'],
@@ -221,11 +247,22 @@ try {
                             </div>
                             <div class="form-group">
                                 <label>Make</label>
-                                <input type="text" name="make" class="form-control">
+                                <select name="make" id="add_make" class="form-control" onchange="avPopulateModelOptions('add_make','add_model','add_model_other_wrap')">
+                                    <option value="">-- Select Make --</option>
+                                    <?php foreach (array_keys($knownVehicleModels) as $mk): ?>
+                                        <option value="<?= htmlspecialchars($mk) ?>"><?= htmlspecialchars($mk) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </div>
                             <div class="form-group">
                                 <label>Model</label>
-                                <input type="text" name="model" class="form-control">
+                                <select name="model" id="add_model" class="form-control">
+                                    <option value="">-- Select Make First --</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="add_model_other_wrap" style="display:none;">
+                                <label>New Model</label>
+                                <input type="text" name="model_other" id="add_model_other" class="form-control" placeholder="Enter new model">
                             </div>
                             <div class="form-group">
                                 <label>Year</label>
@@ -283,11 +320,22 @@ try {
                             </div>
                             <div class="form-group">
                                 <label>Make</label>
-                                <input type="text" name="make" id="edit_make" class="form-control">
+                                <select name="make" id="edit_make" class="form-control" onchange="avPopulateModelOptions('edit_make','edit_model','edit_model_other_wrap')">
+                                    <option value="">-- Select Make --</option>
+                                    <?php foreach (array_keys($knownVehicleModels) as $mk): ?>
+                                        <option value="<?= htmlspecialchars($mk) ?>"><?= htmlspecialchars($mk) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </div>
                             <div class="form-group">
                                 <label>Model</label>
-                                <input type="text" name="model" id="edit_model" class="form-control">
+                                <select name="model" id="edit_model" class="form-control">
+                                    <option value="">-- Select Make First --</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="edit_model_other_wrap" style="display:none;">
+                                <label>New Model</label>
+                                <input type="text" name="model_other_edit" id="edit_model_other" class="form-control" placeholder="Enter new model">
                             </div>
                             <div class="form-group">
                                 <label>Year</label>
@@ -321,6 +369,8 @@ try {
 
 <script src="includes/admin.js"></script>
 <script>
+const avMakeModelMap = <?= json_encode($knownVehicleModels) ?>;
+
 function openModal(id) {
     document.getElementById(id).classList.add('active');
 }
@@ -329,13 +379,69 @@ function closeModal(id) {
     document.getElementById(id).classList.remove('active');
 }
 
+function avPopulateModelOptions(makeId, modelId, otherWrapId, selectedModel = '') {
+    const makeSel = document.getElementById(makeId);
+    const modelSel = document.getElementById(modelId);
+    const otherWrap = document.getElementById(otherWrapId);
+    const otherInputId = modelId === 'edit_model' ? 'edit_model_other' : 'add_model_other';
+    const otherInput = document.getElementById(otherInputId);
+    const make = makeSel.value;
+    const models = avMakeModelMap[make] || [];
+
+    modelSel.innerHTML = '';
+    if (!make) {
+        modelSel.innerHTML = '<option value="">-- Select Make First --</option>';
+        if (otherWrap) otherWrap.style.display = 'none';
+        if (otherInput) otherInput.value = '';
+        return;
+    }
+
+    modelSel.innerHTML = '<option value="">-- Select Model --</option>';
+    models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+    });
+
+    const otherOpt = document.createElement('option');
+    otherOpt.value = '__other__';
+    otherOpt.textContent = 'Other / New Model';
+    modelSel.appendChild(otherOpt);
+
+    if (selectedModel) {
+        if (models.includes(selectedModel)) {
+            modelSel.value = selectedModel;
+            if (otherWrap) otherWrap.style.display = 'none';
+            if (otherInput) otherInput.value = '';
+        } else {
+            modelSel.value = '__other__';
+            if (otherWrap) otherWrap.style.display = '';
+            if (otherInput) otherInput.value = selectedModel;
+        }
+    } else {
+        if (otherWrap) otherWrap.style.display = 'none';
+        if (otherInput) otherInput.value = '';
+    }
+}
+
 function editVehicle(vehicleId, clientId, plateNumber, vin, make, model, year, color, status) {
     document.getElementById('edit_vehicle_id').value = vehicleId;
     document.getElementById('edit_client_id').value = clientId;
     document.getElementById('edit_plate_number').value = plateNumber;
     document.getElementById('edit_vin').value = vin;
-    document.getElementById('edit_make').value = make;
-    document.getElementById('edit_model').value = model;
+    const editMake = document.getElementById('edit_make');
+    if (make && !avMakeModelMap[make]) {
+        const exists = Array.from(editMake.options).some(o => o.value === make);
+        if (!exists) {
+            const opt = document.createElement('option');
+            opt.value = make;
+            opt.textContent = make + ' (existing)';
+            editMake.appendChild(opt);
+        }
+    }
+    editMake.value = make;
+    avPopulateModelOptions('edit_make', 'edit_model', 'edit_model_other_wrap', model);
     document.getElementById('edit_year').value = year;
     document.getElementById('edit_color').value = color;
     document.getElementById('edit_status').value = status;
@@ -360,6 +466,17 @@ document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
             overlay.classList.remove('active');
         }
     });
+});
+
+document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'add_model') {
+        document.getElementById('add_model_other_wrap').style.display = e.target.value === '__other__' ? '' : 'none';
+        if (e.target.value !== '__other__') document.getElementById('add_model_other').value = '';
+    }
+    if (e.target && e.target.id === 'edit_model') {
+        document.getElementById('edit_model_other_wrap').style.display = e.target.value === '__other__' ? '' : 'none';
+        if (e.target.value !== '__other__') document.getElementById('edit_model_other').value = '';
+    }
 });
 </script>
 </body>

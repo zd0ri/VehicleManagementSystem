@@ -10,6 +10,16 @@ $current_page = 'inventory';
 
 require_once __DIR__ . '/../includes/db.php';
 
+// Ensure archive flag exists so inventory records are preserved for tracking.
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM inventory")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('is_archived', $cols, true)) {
+        $pdo->exec("ALTER TABLE inventory ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0 AFTER supplier_id");
+    }
+} catch (Exception $e) {
+    // Non-fatal: existing installations may already have the column.
+}
+
 $success = '';
 $error = '';
 
@@ -114,21 +124,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
     }
 
-    // DELETE
+    // ARCHIVE (non-destructive delete)
     if ($action === 'delete') {
         try {
-            // Remove image file if exists
-            $stmt = $pdo->prepare("SELECT image FROM inventory WHERE item_id = ?");
-            $stmt->execute([(int)$_POST['item_id']]);
-            $item = $stmt->fetch();
-            if ($item && $item['image'] && file_exists(__DIR__ . '/../uploads/' . $item['image'])) {
-                unlink(__DIR__ . '/../uploads/' . $item['image']);
-            }
-
-            $stmt = $pdo->prepare("DELETE FROM inventory WHERE item_id = ?");
-            $stmt->execute([(int)$_POST['item_id']]);
-            logAudit($pdo, 'Deleted inventory item', 'inventory', (int)$_POST['item_id']);
-            $success = 'Item deleted successfully.';
+            $itemId = (int)$_POST['item_id'];
+            $stmt = $pdo->prepare("UPDATE inventory SET is_archived = 1 WHERE item_id = ?");
+            $stmt->execute([$itemId]);
+            logAudit($pdo, 'Archived inventory item', 'inventory', $itemId);
+            $success = 'Item archived successfully. Record kept for tracking.';
         } catch (Exception $e) {
             $error = 'Failed to delete item: ' . $e->getMessage();
         }
@@ -155,7 +158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 // Fetch all inventory items with supplier info
 $items = [];
 try {
-    $result = $pdo->query("SELECT i.*, s.supplier_name AS linked_supplier_name FROM inventory i LEFT JOIN suppliers s ON i.supplier_id = s.supplier_id ORDER BY i.item_name");
+    $result = $pdo->query("SELECT i.*, s.supplier_name AS linked_supplier_name FROM inventory i LEFT JOIN suppliers s ON i.supplier_id = s.supplier_id WHERE i.is_archived = 0 ORDER BY i.item_name");
     $items = $result->fetchAll();
 } catch (Exception $e) {
     $error = 'Failed to fetch inventory: ' . $e->getMessage();
@@ -167,7 +170,7 @@ $suppliersList = $pdo->query("SELECT supplier_id, supplier_name FROM suppliers W
 // Count low stock items (quantity <= 5)
 $lowStockCount = 0;
 try {
-    $stmt = $pdo->query("SELECT COUNT(*) FROM inventory WHERE quantity <= 5");
+    $stmt = $pdo->query("SELECT COUNT(*) FROM inventory WHERE is_archived = 0 AND quantity <= 5");
     $lowStockCount = (int)$stmt->fetchColumn();
 } catch (Exception $e) {
     // silently ignore

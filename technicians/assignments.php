@@ -332,7 +332,22 @@ foreach ($all_parts->fetchAll() as $p) {
                         <?php endif; ?>
 
                         <!-- Parts Used -->
-                        <?php $used_parts = $parts_by_assignment[$a['assignment_id']] ?? []; ?>
+                        <?php
+                            $used_parts = $parts_by_assignment[$a['assignment_id']] ?? [];
+                            $parts_total = 0;
+                            foreach ($used_parts as $upCalc) {
+                                $parts_total += ((int)$upCalc['quantity']) * ((float)$upCalc['unit_price']);
+                            }
+                            $service_total = (float)($a['base_price'] ?? 0);
+                            $grand_total = $service_total + $parts_total;
+                        ?>
+                        <div style="margin-top:16px;padding:12px;background:var(--tech-surface-2);border-radius:var(--radius-sm);border:1px solid var(--tech-border);">
+                            <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;">
+                                <div><strong>Service:</strong> ₱<?= number_format($service_total, 2) ?></div>
+                                <div><strong>Parts:</strong> ₱<?= number_format($parts_total, 2) ?></div>
+                                <div style="color:var(--primary);"><strong>Total:</strong> ₱<?= number_format($grand_total, 2) ?></div>
+                            </div>
+                        </div>
                         <?php if (!empty($used_parts)): ?>
                         <div style="margin-top:16px;">
                             <h4 style="font-size:13px;color:var(--tech-text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
@@ -347,7 +362,7 @@ foreach ($all_parts->fetchAll() as $p) {
                                     <?php if ($a['status'] !== 'Finished'): ?><th style="padding:8px;text-align:center;">Action</th><?php endif; ?>
                                 </tr></thead>
                                 <tbody>
-                                <?php $parts_total = 0; foreach ($used_parts as $up): $line_total = $up['quantity'] * $up['unit_price']; $parts_total += $line_total; ?>
+                                <?php foreach ($used_parts as $up): $line_total = $up['quantity'] * $up['unit_price']; ?>
                                 <tr style="border-bottom:1px solid var(--tech-border);">
                                     <td style="padding:8px;color:var(--tech-text);"><?= htmlspecialchars($up['item_name']) ?></td>
                                     <td style="padding:8px;text-align:center;color:var(--tech-text);"><?= $up['quantity'] ?></td>

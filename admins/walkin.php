@@ -10,6 +10,56 @@ $current_page = 'walkin';
 
 require_once __DIR__ . '/../includes/db.php';
 
+// Backward-compatible schema update for expertise-based assignment.
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('expertise', $cols, true)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN expertise TEXT NULL AFTER status");
+    }
+} catch (Exception $e) {
+    // Keep walk-in flow functional even if schema update cannot run.
+}
+
+function walkinServiceNeedsExpertise(string $serviceName): array {
+    $n = strtolower($serviceName);
+    $map = [
+        'engine' => ['engine'],
+        'oil' => ['oil', 'lubrication', 'engine'],
+        'brake' => ['brake'],
+        'tire' => ['tire', 'wheel', 'alignment'],
+        'wheel' => ['wheel', 'tire', 'alignment'],
+        'battery' => ['battery', 'electrical'],
+        'electrical' => ['electrical', 'battery'],
+        'detail' => ['detail', 'detailing', 'body'],
+    ];
+    foreach ($map as $key => $skills) {
+        if (strpos($n, $key) !== false) {
+            return $skills;
+        }
+    }
+    return [];
+}
+
+function walkinTechMatchesService(string $serviceName, ?string $expertise): bool {
+    if (!$expertise) {
+        return false;
+    }
+    $e = strtolower($expertise);
+    if (strpos($e, 'general') !== false || strpos($e, 'all') !== false) {
+        return true;
+    }
+    $needs = walkinServiceNeedsExpertise($serviceName);
+    if (empty($needs)) {
+        return true;
+    }
+    foreach ($needs as $skill) {
+        if (strpos($e, $skill) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 $success = '';
 $error = '';
 
@@ -67,7 +117,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($vehicle_type === 'new') {
                 $plate = strtoupper(trim($_POST['plate_number']));
                 $make = trim($_POST['make']);
-                $model = trim($_POST['model']);
+                $modelRaw = trim($_POST['model'] ?? '');
+                $modelOther = trim($_POST['model_other'] ?? '');
+                $model = ($modelRaw === '__other__') ? $modelOther : $modelRaw;
                 $year = trim($_POST['year'] ?? '');
                 $color = trim($_POST['color'] ?? '');
 
@@ -95,9 +147,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $service_id = (int) ($_POST['service_id'] ?? 0);
             $notes = trim($_POST['notes'] ?? '');
 
-            // Find least busy available technician
+                // Find least busy available technician, preferring matching expertise.
             $tech_stmt = $pdo->query("
                 SELECT u.user_id, u.full_name,
+                       u.expertise,
                        COUNT(a.assignment_id) AS active_count,
                        SUM(CASE WHEN a.status = 'Ongoing' THEN 1 ELSE 0 END) AS ongoing_count
                 FROM users u
@@ -108,21 +161,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ");
             $all_techs = $tech_stmt->fetchAll();
 
-            $free_tech = null;
-            $least_busy_tech = null;
-            foreach ($all_techs as $t) {
-                if (!$least_busy_tech) $least_busy_tech = $t;
-                if ((int) $t['ongoing_count'] === 0) {
-                    $free_tech = $t;
-                    break;
-                }
-            }
-
             $svc_name = 'Walk-In Service';
             if ($service_id) {
                 $svc = $pdo->prepare("SELECT service_name FROM services WHERE service_id = ?");
                 $svc->execute([$service_id]);
                 $svc_name = $svc->fetchColumn() ?: $svc_name;
+            }
+
+            $matching_techs = array_values(array_filter($all_techs, function($t) use ($svc_name) {
+                return walkinTechMatchesService($svc_name, $t['expertise'] ?? null);
+            }));
+            $pool = !empty($matching_techs) ? $matching_techs : $all_techs;
+
+            $free_tech = null;
+            $least_busy_tech = null;
+            foreach ($pool as $t) {
+                if (!$least_busy_tech) $least_busy_tech = $t;
+                if ((int) $t['ongoing_count'] === 0) {
+                    $free_tech = $t;
+                    break;
+                }
             }
 
             if ($free_tech) {
@@ -614,11 +672,34 @@ foreach ($walkins as $w) {
                                         </div>
                                         <div class="form-group" style="margin-bottom:0;">
                                             <label>Make <span style="color:red;">*</span></label>
-                                            <input type="text" name="make" class="form-control" placeholder="e.g. Toyota">
+                                            <select name="make" id="walkinMake" class="form-control" onchange="populateWalkinModels()">
+                                                <option value="">-- Select Make --</option>
+                                                <option value="Toyota">Toyota</option>
+                                                <option value="Honda">Honda</option>
+                                                <option value="Mitsubishi">Mitsubishi</option>
+                                                <option value="Nissan">Nissan</option>
+                                                <option value="Ford">Ford</option>
+                                                <option value="Hyundai">Hyundai</option>
+                                                <option value="Kia">Kia</option>
+                                                <option value="Suzuki">Suzuki</option>
+                                                <option value="Mazda">Mazda</option>
+                                                <option value="Isuzu">Isuzu</option>
+                                                <option value="Chevrolet">Chevrolet</option>
+                                                <option value="BMW">BMW</option>
+                                                <option value="Mercedes-Benz">Mercedes-Benz</option>
+                                                <option value="Audi">Audi</option>
+                                                <option value="Lexus">Lexus</option>
+                                            </select>
                                         </div>
                                         <div class="form-group" style="margin-bottom:0;">
                                             <label>Model <span style="color:red;">*</span></label>
-                                            <input type="text" name="model" class="form-control" placeholder="e.g. Vios">
+                                            <select name="model" id="walkinModel" class="form-control">
+                                                <option value="">-- Select Make First --</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" id="walkinModelOtherWrap" style="margin-bottom:0;grid-column:1/-1;display:none;">
+                                            <label>New Model Name <span style="color:red;">*</span></label>
+                                            <input type="text" name="model_other" id="walkinModelOther" class="form-control" placeholder="Enter new model">
                                         </div>
                                         <div class="form-group" style="margin-bottom:0;">
                                             <label>Year</label>
@@ -834,6 +915,57 @@ function toggleVehicleType(type) {
             : 'btn btn-secondary btn-sm vehicle-toggle-btn';
     });
 }
+
+const walkinMakeModelMap = {
+    Toyota: ['Vios', 'Corolla Altis', 'Fortuner', 'Innova', 'Hilux', 'Wigo', 'Avanza'],
+    Honda: ['Civic', 'City', 'CR-V', 'BR-V', 'HR-V', 'Jazz'],
+    Mitsubishi: ['Montero Sport', 'Mirage', 'Xpander', 'L300', 'Strada'],
+    Nissan: ['Navara', 'Almera', 'Terra', 'Livina'],
+    Ford: ['Ranger', 'Everest', 'Territory', 'EcoSport'],
+    Hyundai: ['Accent', 'Tucson', 'Starex', 'Reina'],
+    Kia: ['Soluto', 'Seltos', 'Sportage', 'Stonic'],
+    Suzuki: ['Ertiga', 'Swift', 'Dzire', 'Celerio'],
+    Mazda: ['Mazda2', 'Mazda3', 'CX-5', 'BT-50'],
+    Isuzu: ['D-Max', 'MU-X'],
+    Chevrolet: ['Trailblazer', 'Spark'],
+    BMW: ['3 Series', '5 Series', 'X3', 'X5'],
+    'Mercedes-Benz': ['C-Class', 'E-Class', 'GLC'],
+    Audi: ['A4', 'Q5', 'Q7'],
+    Lexus: ['IS', 'ES', 'RX', 'NX']
+};
+
+function populateWalkinModels() {
+    var makeSel = document.getElementById('walkinMake');
+    var modelSel = document.getElementById('walkinModel');
+    var otherWrap = document.getElementById('walkinModelOtherWrap');
+    var models = walkinMakeModelMap[makeSel.value] || [];
+
+    modelSel.innerHTML = '';
+    if (!makeSel.value) {
+        modelSel.innerHTML = '<option value="">-- Select Make First --</option>';
+        otherWrap.style.display = 'none';
+        return;
+    }
+
+    modelSel.innerHTML = '<option value="">-- Select Model --</option>';
+    models.forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+    });
+    var other = document.createElement('option');
+    other.value = '__other__';
+    other.textContent = 'Other / New Model';
+    modelSel.appendChild(other);
+    otherWrap.style.display = 'none';
+}
+
+document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'walkinModel') {
+        document.getElementById('walkinModelOtherWrap').style.display = e.target.value === '__other__' ? '' : 'none';
+    }
+});
 
 // Filter vehicles by selected client
 function onClientChange() {
